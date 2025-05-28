@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-22.04  # 👈 Use stable image
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -102,7 +102,7 @@ jobs:
 
   deploy:
     needs: build-and-deploy
-    runs-on: ubuntu-22.04  # 👈 Match image for deployment
+    runs-on: ubuntu-22.04
     steps:
       - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v2
+        uses: actions/deploy-pages@v1  # 🔧 FIXED: v1 avoids v3 dependency
