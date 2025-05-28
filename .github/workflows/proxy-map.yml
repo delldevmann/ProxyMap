@@ -1,0 +1,112 @@
+name: Generate Proxy Map
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install folium requests matplotlib pandas
+
+      - name: Generate proxy map
+        run: |
+          import requests, folium, pandas as pd, matplotlib.pyplot as plt
+          from folium.plugins import Fullscreen, MiniMap, FloatImage
+
+          url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
+          data = requests.get(url).json()
+
+          proxies = []
+          for group in data.values():
+              for proxy in group.get("sample_proxies", {}).values():
+                  loc = proxy.get("location", {})
+                  if loc.get("lat") and loc.get("lon"):
+                      proxies.append({
+                          "ip": proxy["ip"],
+                          "latency": proxy.get("latency_ms", 9999),
+                          "anonymity": proxy.get("anonymity", "Unknown"),
+                          "lat": loc["lat"],
+                          "lon": loc["lon"],
+                          "city": loc.get("city", "Unknown"),
+                          "country": loc.get("country", "Unknown"),
+                          "code": loc.get("countryCode", "xx"),
+                          "isp": loc.get("isp", "N/A")
+                      })
+
+          df = pd.DataFrame(proxies)
+          lat, lon = df["lat"].mean(), df["lon"].mean()
+
+          m = folium.Map(location=[lat, lon], zoom_start=2, tiles="CartoDB positron", control_scale=True)
+          Fullscreen().add_to(m)
+          MiniMap(toggle_display=True).add_to(m)
+
+          for _, row in df.iterrows():
+              color = 'green' if row["latency"] < 1000 else 'orange' if row["latency"] < 2000 else 'red'
+              flag = f"https://flagcdn.com/24x18/{row['code'].lower()}.png"
+              popup = f"""
+              <div style='font-family:Arial; font-size:13px'>
+                <img src='{flag}' style='vertical-align:middle'> <b>{row['country']}</b><br>
+                <b>IP:</b> {row['ip']}<br>
+                <b>City:</b> {row['city']}<br>
+                <b>ISP:</b> {row['isp']}<br>
+                <b>Latency:</b> {row['latency']} ms<br>
+                <b>Anonymity:</b> {row['anonymity']}
+              </div>
+              """
+              folium.CircleMarker(
+                  location=[row["lat"], row["lon"]],
+                  radius=6,
+                  color=color,
+                  fill=True,
+                  fill_opacity=0.9,
+                  popup=folium.Popup(popup, max_width=300),
+                  tooltip=row["ip"]
+              ).add_to(m)
+
+          # Stats chart
+          top_countries = df["country"].value_counts().nlargest(10)
+          plt.figure(figsize=(8, 4))
+          top_countries.plot(kind='barh', color='skyblue')
+          plt.title("Top 10 Countries by Proxy Count")
+          plt.xlabel("Number of Proxies")
+          plt.tight_layout()
+          chart_path = "public/country_chart.png"
+          plt.savefig(chart_path)
+          plt.close()
+
+          FloatImage(chart_path, bottom=75, left=85).add_to(m)
+
+          # Save map to public dir
+          import os
+          os.makedirs("public", exist_ok=True)
+          m.save("public/index.html")
+
+      - name: Upload map artifact
+        uses: actions/upload-pages-artifact@v1
+        with:
+          path: public
+
+  deploy:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v2
