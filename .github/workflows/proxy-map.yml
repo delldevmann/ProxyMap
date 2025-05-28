@@ -37,31 +37,111 @@ jobs:
           from folium.plugins import Fullscreen, MiniMap, FloatImage
           import os
 
-          # Fetch proxy data
-          url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
-          try:
-              data = requests.get(url, timeout=30).json()
-          except Exception as e:
-              print(f"Error fetching data: {e}")
-              exit(1)
+          # Fetch proxy data from multiple sources
+          import re
+          from datetime import datetime
+          
+          def fetch_latest_all_proxies_url():
+              """Find the latest all_proxies_*.json file"""
+              try:
+                  # Get the directory listing from GitHub API
+                  api_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
+                  response = requests.get(api_url, timeout=30)
+                  files = response.json()
+                  
+                  # Find all_proxies files and get the latest one
+                  all_proxies_files = []
+                  for file in files:
+                      if file['name'].startswith('all_proxies_') and file['name'].endswith('.json'):
+                          # Extract timestamp from filename
+                          match = re.search(r'all_proxies_(\d{8}_\d{6})\.json', file['name'])
+                          if match:
+                              timestamp = datetime.strptime(match.group(1), '%Y%m%d_%H%M%S')
+                              all_proxies_files.append((timestamp, file['download_url']))
+                  
+                  if all_proxies_files:
+                      # Return the latest file URL
+                      latest_file = max(all_proxies_files, key=lambda x: x[0])
+                      return latest_file[1]
+                  return None
+              except Exception as e:
+                  print(f"Error finding latest all_proxies file: {e}")
+                  return None
 
-          # Process proxy data
+          # Data sources
+          summary_url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
+          all_proxies_url = fetch_latest_all_proxies_url()
+          
           proxies = []
-          for group in data.values():
-              for proxy in group.get("sample_proxies", {}).values():
-                  loc = proxy.get("location", {})
-                  if loc.get("lat") and loc.get("lon"):
-                      proxies.append({
-                          "ip": proxy["ip"],
-                          "latency": proxy.get("latency_ms", 9999),
-                          "anonymity": proxy.get("anonymity", "Unknown"),
-                          "lat": loc["lat"],
-                          "lon": loc["lon"],
-                          "city": loc.get("city", "Unknown"),
-                          "country": loc.get("country", "Unknown"),
-                          "code": loc.get("countryCode", "xx"),
-                          "isp": loc.get("isp", "N/A")
-                      })
+          data_sources = []
+          
+          # Fetch summary data (sample proxies with rich metadata)
+          try:
+              print("Fetching summary data...")
+              summary_data = requests.get(summary_url, timeout=30).json()
+              
+              for group in summary_data.values():
+                  for proxy in group.get("sample_proxies", {}).values():
+                      loc = proxy.get("location", {})
+                      if loc.get("lat") and loc.get("lon"):
+                          proxies.append({
+                              "ip": proxy["ip"],
+                              "port": proxy.get("port", "Unknown"),
+                              "latency": proxy.get("latency_ms", 9999),
+                              "anonymity": proxy.get("anonymity", "Unknown"),
+                              "lat": loc["lat"],
+                              "lon": loc["lon"],
+                              "city": loc.get("city", "Unknown"),
+                              "country": loc.get("country", "Unknown"),
+                              "code": loc.get("countryCode", "xx"),
+                              "isp": loc.get("isp", "N/A"),
+                              "source": "summary",
+                              "protocol": proxy.get("protocol", "HTTP")
+                          })
+              data_sources.append(f"Summary: {len([p for p in proxies if p['source'] == 'summary'])} proxies")
+              print(f"Loaded {len(proxies)} proxies from summary")
+              
+          except Exception as e:
+              print(f"Error fetching summary data: {e}")
+
+          # Fetch complete dataset if available
+          if all_proxies_url:
+              try:
+                  print(f"Fetching complete dataset from: {all_proxies_url}")
+                  all_proxies_data = requests.get(all_proxies_url, timeout=60).json()
+                  
+                  initial_count = len(proxies)
+                  existing_ips = {p["ip"] for p in proxies}
+                  
+                  # Add proxies from complete dataset that aren't already included
+                  for proxy in all_proxies_data:
+                      if proxy.get("ip") not in existing_ips:
+                          loc = proxy.get("location", {})
+                          if loc.get("lat") and loc.get("lon"):
+                              proxies.append({
+                                  "ip": proxy["ip"],
+                                  "port": proxy.get("port", "Unknown"),
+                                  "latency": proxy.get("response_time_ms", proxy.get("latency_ms", 9999)),
+                                  "anonymity": proxy.get("anonymity", "Unknown"),
+                                  "lat": loc["lat"],
+                                  "lon": loc["lon"],
+                                  "city": loc.get("city", "Unknown"),
+                                  "country": loc.get("country", "Unknown"),
+                                  "code": loc.get("countryCode", "xx"),
+                                  "isp": loc.get("isp", "N/A"),
+                                  "source": "complete",
+                                  "protocol": proxy.get("protocol", "HTTP")
+                              })
+                              existing_ips.add(proxy["ip"])
+                  
+                  added_count = len(proxies) - initial_count
+                  data_sources.append(f"Complete dataset: +{added_count} additional proxies")
+                  print(f"Added {added_count} additional proxies from complete dataset")
+                  
+              except Exception as e:
+                  print(f"Error fetching complete dataset: {e}")
+          else:
+              print("Could not find latest all_proxies file, using summary data only")
 
           if not proxies:
               print("No proxy data found")
@@ -82,31 +162,39 @@ jobs:
           Fullscreen().add_to(m)
           MiniMap(toggle_display=True).add_to(m)
 
-          # Add markers for each proxy
+          # Add markers for each proxy with enhanced info
           for _, row in df.iterrows():
               color = 'green' if row["latency"] < 1000 else 'orange' if row["latency"] < 2000 else 'red'
               flag = f"https://flagcdn.com/24x18/{row['code'].lower()}.png"
               
+              # Enhanced popup with more details
               popup = f"""
-              <div style='font-family:Arial; font-size:13px; width:250px'>
+              <div style='font-family:Arial; font-size:13px; width:280px'>
                 <img src='{flag}' style='vertical-align:middle' onerror="this.style.display='none'"> 
                 <b>{row['country']}</b><br>
-                <b>IP:</b> {row['ip']}<br>
-                <b>City:</b> {row['city']}<br>
-                <b>ISP:</b> {row['isp']}<br>
-                <b>Latency:</b> {row['latency']} ms<br>
-                <b>Anonymity:</b> {row['anonymity']}
+                <hr style='margin: 5px 0;'>
+                <b>🌐 IP:</b> {row['ip']}:{row.get('port', 'N/A')}<br>
+                <b>📍 City:</b> {row['city']}<br>
+                <b>🏢 ISP:</b> {row['isp']}<br>
+                <b>⚡ Latency:</b> {row['latency']} ms<br>
+                <b>🔒 Anonymity:</b> {row['anonymity']}<br>
+                <b>📡 Protocol:</b> {row.get('protocol', 'HTTP')}<br>
+                <b>📊 Source:</b> {row.get('source', 'summary').title()}
               </div>
               """
               
+              # Different marker styles based on source
+              marker_size = 8 if row.get('source') == 'complete' else 6
+              opacity = 0.8 if row.get('source') == 'complete' else 0.9
+              
               folium.CircleMarker(
                   location=[row["lat"], row["lon"]],
-                  radius=6,
+                  radius=marker_size,
                   color=color,
                   fill=True,
-                  fill_opacity=0.9,
-                  popup=folium.Popup(popup, max_width=300),
-                  tooltip=f"{row['ip']} ({row['country']})"
+                  fill_opacity=opacity,
+                  popup=folium.Popup(popup, max_width=320),
+                  tooltip=f"{row['ip']} ({row['country']}) - {row.get('source', 'summary').title()}"
               ).add_to(m)
 
           # Create country distribution chart with better styling
@@ -140,10 +228,10 @@ jobs:
                      facecolor='white', edgecolor='none')
           plt.close()
 
-          # Add stats info box
+          # Add enhanced stats info box
           stats_html = f"""
           <div style="position: fixed; 
-                      top: 10px; left: 10px; width: 200px; 
+                      top: 10px; left: 10px; width: 220px; 
                       background-color: rgba(255,255,255,0.95); 
                       border: 2px solid #333; border-radius: 8px;
                       z-index: 9999; font-size: 12px; padding: 12px;
@@ -153,7 +241,12 @@ jobs:
             <strong>Total Proxies:</strong> {len(proxies)}<br>
             <strong>Countries:</strong> {df['country'].nunique()}<br>
             <strong>Avg Latency:</strong> {df['latency'].mean():.0f}ms<br>
+            <strong>Data Sources:</strong> {len(data_sources)}<br>
             <strong>Last Update:</strong> Now
+          </div>
+          <hr style="margin: 8px 0;">
+          <div style="font-size: 10px; color: #777;">
+            {'<br>'.join(data_sources)}
           </div>
           </div>
           """
