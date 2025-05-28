@@ -135,9 +135,9 @@ jobs:
           # Create output directory
           os.makedirs("public", exist_ok=True)
           
-          # Save chart with transparent background
+          # Save chart with white background
           plt.savefig("public/country_chart.png", dpi=120, bbox_inches='tight', 
-                     facecolor='white', edgecolor='none', alpha=0.9)
+                     facecolor='white', edgecolor='none')
           plt.close()
 
           # Add stats info box
