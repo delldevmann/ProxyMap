@@ -108,23 +108,80 @@ jobs:
           if all_proxies_url:
               try:
                   print(f"Fetching complete dataset from: {all_proxies_url}")
-                  all_proxies_data = requests.get(all_proxies_url, timeout=60).json()
+                  all_proxies_response = requests.get(all_proxies_url, timeout=60)
+                  all_proxies_data = all_proxies_response.json()
+                  
+                  print(f"Complete dataset type: {type(all_proxies_data)}")
+                  print(f"Complete dataset length/keys: {len(all_proxies_data) if isinstance(all_proxies_data, (list, dict)) else 'Unknown'}")
+                  
+                  # Handle different data structures
+                  proxy_list = []
+                  if isinstance(all_proxies_data, list):
+                      proxy_list = all_proxies_data
+                  elif isinstance(all_proxies_data, dict):
+                      # Could be grouped by protocol or other categories
+                      for key, value in all_proxies_data.items():
+                          if isinstance(value, list):
+                              proxy_list.extend(value)
+                          elif isinstance(value, dict) and 'proxies' in value:
+                              proxy_list.extend(value['proxies'])
+                          elif isinstance(value, dict) and 'sample_proxies' in value:
+                              proxy_list.extend(value['sample_proxies'].values())
+                  
+                  print(f"Extracted {len(proxy_list)} proxies from complete dataset")
                   
                   initial_count = len(proxies)
                   existing_ips = {p["ip"] for p in proxies}
+                  processed_count = 0
                   
-                  # Add proxies from complete dataset that aren't already included
-                  for proxy in all_proxies_data:
-                      if proxy.get("ip") not in existing_ips:
-                          loc = proxy.get("location", {})
-                          if loc.get("lat") and loc.get("lon"):
+                  # Process each proxy from complete dataset
+                  for i, proxy in enumerate(proxy_list):
+                      if i % 1000 == 0:
+                          print(f"Processing proxy {i}/{len(proxy_list)}")
+                      
+                      # Handle different proxy formats
+                      proxy_ip = proxy.get("ip") or proxy.get("host") or proxy.get("address")
+                      if not proxy_ip or proxy_ip in existing_ips:
+                          continue
+                      
+                      # Try different location field names
+                      loc = (proxy.get("location") or 
+                             proxy.get("geo") or 
+                             proxy.get("geolocation") or 
+                             {})
+                      
+                      # Try different lat/lon field names
+                      lat = (loc.get("lat") or loc.get("latitude") or 
+                             proxy.get("lat") or proxy.get("latitude"))
+                      lon = (loc.get("lon") or loc.get("lng") or loc.get("longitude") or 
+                             proxy.get("lon") or proxy.get("lng") or proxy.get("longitude"))
+                      
+                      if lat and lon:
+                          try:
+                              # Ensure lat/lon are numbers
+                              lat = float(lat)
+                              lon = float(lon)
+                              
+                              # Get latency from various possible fields
+                              latency = (proxy.get("latency_ms") or 
+                                       proxy.get("response_time_ms") or 
+                                       proxy.get("latency") or 
+                                       proxy.get("response_time") or 
+                                       9999)
+                              
+                              if isinstance(latency, str):
+                                  try:
+                                      latency = float(latency.replace('ms', '').strip())
+                                  except:
+                                      latency = 9999
+                              
                               proxies.append({
-                                  "ip": proxy["ip"],
+                                  "ip": proxy_ip,
                                   "port": proxy.get("port", "Unknown"),
-                                  "latency": proxy.get("response_time_ms", proxy.get("latency_ms", 9999)),
+                                  "latency": latency,
                                   "anonymity": proxy.get("anonymity", "Unknown"),
-                                  "lat": loc["lat"],
-                                  "lon": loc["lon"],
+                                  "lat": lat,
+                                  "lon": lon,
                                   "city": loc.get("city", "Unknown"),
                                   "country": loc.get("country", "Unknown"),
                                   "code": loc.get("countryCode", "xx"),
@@ -132,14 +189,21 @@ jobs:
                                   "source": "complete",
                                   "protocol": proxy.get("protocol", "HTTP")
                               })
-                              existing_ips.add(proxy["ip"])
+                              existing_ips.add(proxy_ip)
+                              processed_count += 1
+                              
+                          except (ValueError, TypeError) as e:
+                              continue
                   
                   added_count = len(proxies) - initial_count
                   data_sources.append(f"Complete dataset: +{added_count} additional proxies")
-                  print(f"Added {added_count} additional proxies from complete dataset")
+                  print(f"Successfully added {added_count} additional proxies from complete dataset")
+                  print(f"Processed {processed_count} proxies with valid coordinates")
                   
               except Exception as e:
                   print(f"Error fetching complete dataset: {e}")
+                  import traceback
+                  traceback.print_exc()
           else:
               print("Could not find latest all_proxies file, using summary data only")
 
