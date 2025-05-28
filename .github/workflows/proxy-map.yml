@@ -2,21 +2,8 @@ name: Generate Proxy Map
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  pages: write
-  id-token: write
-
-jobs:
-  build-and-deploy:name: Generate Proxy Map
-
-on:
-  schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
+    - cron: '0 */6 * * *'  # Run every 6 hours
+  workflow_dispatch:  # Allow manual triggering
 
 permissions:
   contents: write
@@ -26,6 +13,11 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-22.04
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,13 +32,20 @@ jobs:
 
       - name: Generate proxy map
         run: |
+          python3 << 'EOF'
           import requests, folium, pandas as pd, matplotlib.pyplot as plt
           from folium.plugins import Fullscreen, MiniMap, FloatImage
           import os
 
+          # Fetch proxy data
           url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
-          data = requests.get(url).json()
+          try:
+              data = requests.get(url, timeout=30).json()
+          except Exception as e:
+              print(f"Error fetching data: {e}")
+              exit(1)
 
+          # Process proxy data
           proxies = []
           for group in data.values():
               for proxy in group.get("sample_proxies", {}).values():
@@ -64,19 +63,34 @@ jobs:
                           "isp": loc.get("isp", "N/A")
                       })
 
+          if not proxies:
+              print("No proxy data found")
+              exit(1)
+
           df = pd.DataFrame(proxies)
           lat, lon = df["lat"].mean(), df["lon"].mean()
 
-          m = folium.Map(location=[lat, lon], zoom_start=2, tiles="CartoDB positron", control_scale=True)
+          # Create the map
+          m = folium.Map(
+              location=[lat, lon], 
+              zoom_start=2, 
+              tiles="CartoDB positron", 
+              control_scale=True
+          )
+          
+          # Add plugins
           Fullscreen().add_to(m)
           MiniMap(toggle_display=True).add_to(m)
 
+          # Add markers for each proxy
           for _, row in df.iterrows():
               color = 'green' if row["latency"] < 1000 else 'orange' if row["latency"] < 2000 else 'red'
               flag = f"https://flagcdn.com/24x18/{row['code'].lower()}.png"
+              
               popup = f"""
-              <div style='font-family:Arial; font-size:13px'>
-                <img src='{flag}' style='vertical-align:middle'> <b>{row['country']}</b><br>
+              <div style='font-family:Arial; font-size:13px; width:250px'>
+                <img src='{flag}' style='vertical-align:middle' onerror="this.style.display='none'"> 
+                <b>{row['country']}</b><br>
                 <b>IP:</b> {row['ip']}<br>
                 <b>City:</b> {row['city']}<br>
                 <b>ISP:</b> {row['isp']}<br>
@@ -84,6 +98,7 @@ jobs:
                 <b>Anonymity:</b> {row['anonymity']}
               </div>
               """
+              
               folium.CircleMarker(
                   location=[row["lat"], row["lon"]],
                   radius=6,
@@ -91,24 +106,55 @@ jobs:
                   fill=True,
                   fill_opacity=0.9,
                   popup=folium.Popup(popup, max_width=300),
-                  tooltip=row["ip"]
+                  tooltip=f"{row['ip']} ({row['country']})"
               ).add_to(m)
 
+          # Create country distribution chart
           top_countries = df["country"].value_counts().nlargest(10)
-          plt.figure(figsize=(8, 4))
-          top_countries.plot(kind='barh', color='skyblue')
-          plt.title("Top 10 Countries by Proxy Count")
-          plt.xlabel("Number of Proxies")
+          plt.figure(figsize=(10, 6))
+          bars = top_countries.plot(kind='barh', color='skyblue', edgecolor='navy', linewidth=0.5)
+          plt.title("Top 10 Countries by Proxy Count", fontsize=14, fontweight='bold')
+          plt.xlabel("Number of Proxies", fontsize=12)
+          plt.ylabel("Country", fontsize=12)
+          plt.grid(axis='x', alpha=0.3)
+          
+          # Add value labels on bars
+          for i, v in enumerate(top_countries.values):
+              plt.text(v + 0.5, i, str(v), va='center', fontweight='bold')
+          
           plt.tight_layout()
 
+          # Create output directory
           os.makedirs("public", exist_ok=True)
-          plt.savefig("public/country_chart.png")
+          
+          # Save chart
+          plt.savefig("public/country_chart.png", dpi=150, bbox_inches='tight')
           plt.close()
 
-          FloatImage("public/country_chart.png", bottom=75, left=85).add_to(m)
+          # Add chart to map
+          FloatImage("public/country_chart.png", bottom=10, left=10).add_to(m)
+          
+          # Add legend
+          legend_html = """
+          <div style="position: fixed; 
+                      bottom: 50px; right: 50px; width: 150px; height: 90px; 
+                      background-color: white; border:2px solid grey; z-index:9999; 
+                      font-size:14px; padding: 10px">
+          <p><b>Latency Legend</b></p>
+          <i class="fa fa-circle" style="color:green"></i> < 1000ms<br>
+          <i class="fa fa-circle" style="color:orange"></i> 1000-2000ms<br>
+          <i class="fa fa-circle" style="color:red"></i> > 2000ms
+          </div>
+          """
+          m.get_root().html.add_child(folium.Element(legend_html))
+          
+          # Save map
           m.save("public/index.html")
+          
+          print(f"Generated map with {len(proxies)} proxies from {df['country'].nunique()} countries")
+          EOF
 
-      - name: Upload map artifact
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: public
@@ -116,101 +162,16 @@ jobs:
   deploy:
     needs: build-and-deploy
     runs-on: ubuntu-22.04
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    permissions:
+      pages: write
+      id-token: write
+    
     steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
-
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
-        run: pip install folium requests matplotlib pandas
-
-      - name: Generate proxy map
-        run: |
-          import requests, folium, pandas as pd, matplotlib.pyplot as plt
-          from folium.plugins import Fullscreen, MiniMap, FloatImage
-          import os
-
-          url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
-          data = requests.get(url).json()
-
-          proxies = []
-          for group in data.values():
-              for proxy in group.get("sample_proxies", {}).values():
-                  loc = proxy.get("location", {})
-                  if loc.get("lat") and loc.get("lon"):
-                      proxies.append({
-                          "ip": proxy["ip"],
-                          "latency": proxy.get("latency_ms", 9999),
-                          "anonymity": proxy.get("anonymity", "Unknown"),
-                          "lat": loc["lat"],
-                          "lon": loc["lon"],
-                          "city": loc.get("city", "Unknown"),
-                          "country": loc.get("country", "Unknown"),
-                          "code": loc.get("countryCode", "xx"),
-                          "isp": loc.get("isp", "N/A")
-                      })
-
-          df = pd.DataFrame(proxies)
-          lat, lon = df["lat"].mean(), df["lon"].mean()
-
-          m = folium.Map(location=[lat, lon], zoom_start=2, tiles="CartoDB positron", control_scale=True)
-          Fullscreen().add_to(m)
-          MiniMap(toggle_display=True).add_to(m)
-
-          for _, row in df.iterrows():
-              color = 'green' if row["latency"] < 1000 else 'orange' if row["latency"] < 2000 else 'red'
-              flag = f"https://flagcdn.com/24x18/{row['code'].lower()}.png"
-              popup = f"""
-              <div style='font-family:Arial; font-size:13px'>
-                <img src='{flag}' style='vertical-align:middle'> <b>{row['country']}</b><br>
-                <b>IP:</b> {row['ip']}<br>
-                <b>City:</b> {row['city']}<br>
-                <b>ISP:</b> {row['isp']}<br>
-                <b>Latency:</b> {row['latency']} ms<br>
-                <b>Anonymity:</b> {row['anonymity']}
-              </div>
-              """
-              folium.CircleMarker(
-                  location=[row["lat"], row["lon"]],
-                  radius=6,
-                  color=color,
-                  fill=True,
-                  fill_opacity=0.9,
-                  popup=folium.Popup(popup, max_width=300),
-                  tooltip=row["ip"]
-              ).add_to(m)
-
-          top_countries = df["country"].value_counts().nlargest(10)
-          plt.figure(figsize=(8, 4))
-          top_countries.plot(kind='barh', color='skyblue')
-          plt.title("Top 10 Countries by Proxy Count")
-          plt.xlabel("Number of Proxies")
-          plt.tight_layout()
-
-          os.makedirs("public", exist_ok=True)
-          plt.savefig("public/country_chart.png")
-          plt.close()
-
-          FloatImage("public/country_chart.png", bottom=75, left=85).add_to(m)
-          m.save("public/index.html")
-
-      - name: Upload map artifact
-        uses: actions/upload-pages-artifact@v1
-        with:
-          path: public
-
-  deploy:
-    needs: build-and-deploy
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v1  # 🔧 FIXED: v1 avoids v3 dependency
