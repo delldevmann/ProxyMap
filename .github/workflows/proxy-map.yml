@@ -1,4 +1,124 @@
-name: Generate Proxy Map
+
+
+name: Generate Enhanced Proxy Map - Fixed Schema on: schedule: - cron: '0 */6 * * *' # Run every 6 hours workflow_dispatch: # Allow manual triggering permissions: contents: write pages: write id-token: write jobs: build-and-deploy: runs-on: ubuntu-22.04
+
+pasted
+
+is this correct
+
+Looking at your GitHub Actions workflow for generating an enhanced proxy map, I can see several aspects that are working well and some areas that could be improved. Let me analyze the key components:
+
+What's Working Well:
+Well-structured workflow with proper permissions and environment setup
+Comprehensive data fetching with retry logic and error handling
+Good rate limiting protection with exponential backoff
+Excellent visualization with interactive maps and charts
+Proper deduplication based on IP addresses
+Detailed logging for debugging
+Potential Issues and Improvements:
+1. Schema Handling Flexibility
+Your code assumes specific JSON structures but should be more defensive:
+
+python
+# Add more robust schema validation
+def validate_proxy_data(proxy):
+    """Validate that proxy has minimum required fields"""
+    required_fields = ['ip', 'lat', 'lon']
+    return all(field in proxy and proxy[field] is not None for field in required_fields)
+2. Memory Management
+Processing large datasets could cause memory issues:
+
+python
+# Process in chunks instead of loading everything
+CHUNK_SIZE = 10000
+if len(proxy_candidates) > CHUNK_SIZE:
+    for i in range(0, len(proxy_candidates), CHUNK_SIZE):
+        chunk = proxy_candidates[i:i+CHUNK_SIZE]
+        # Process chunk...
+3. Error Recovery
+The script exits if no proxies are found, but could be more resilient:
+
+python
+if not all_proxies:
+    print("⚠️ No proxy data found - generating placeholder map")
+    # Create a minimal map with explanation instead of exit(1)
+4. GitHub API Rate Limiting
+You're fetching files but not checking rate limit headers:
+
+python
+def check_rate_limit(response):
+    """Check GitHub API rate limit"""
+    remaining = response.headers.get('X-RateLimit-Remaining', 'Unknown')
+    reset_time = response.headers.get('X-RateLimit-Reset', 'Unknown')
+    if remaining != 'Unknown' and int(remaining) < 10:
+        print(f"⚠️ Low rate limit: {remaining} requests remaining")
+5. Coordinate Validation
+Good that you validate coordinates, but could add more checks:
+
+python
+def is_valid_coordinate(lat, lon):
+    """Enhanced coordinate validation"""
+    if lat is None or lon is None:
+        return False
+    try:
+        lat, lon = float(lat), float(lon)
+        # Check for common invalid coordinates
+        if lat == 0 and lon == 0:  # Null Island
+            return False
+        if abs(lat) > 90 or abs(lon) > 180:
+            return False
+        return True
+    except (ValueError, TypeError):
+        return False
+6. HTML Injection Protection
+When creating popup content, sanitize user data:
+
+python
+import html
+
+def sanitize_html(text):
+    """Escape HTML special characters"""
+    return html.escape(str(text))
+
+# Use in popup content
+popup_content = f"""
+<tr><td><strong>🌐 IP:Port</strong></td><td>{sanitize_html(row['ip'])}:{sanitize_html(row['port'])}</td></tr>
+"""
+7. File Size Limits
+GitHub Pages has size limits, consider checking:
+
+python
+# Check output file size
+import os
+output_size = os.path.getsize("public/index.html") / (1024 * 1024)  # MB
+if output_size > 50:  # GitHub Pages recommends < 100MB
+    print(f"⚠️ Large output file: {output_size:.1f}MB")
+Overall Assessment:
+The workflow is mostly correct and well-designed. The main concerns are:
+
+Robustness: Add more error handling for edge cases
+Scalability: Consider memory usage with large datasets
+Security: Sanitize data displayed in HTML
+API limits: Better handle GitHub rate limiting
+The visualization and data processing logic is solid. With these improvements, it would be a very robust solution for generating proxy maps from dynamic data sources.
+
+
+
+
+show me the updated yaml
+
+Here's the updated YAML with improved error handling, memory management, and security enhancements:
+
+
+Enhanced Proxy Map Workflow - Improved Version
+Code 
+
+
+
+Pasted content
+28.93 KB •582 lines
+Formatting may be inconsistent from source
+name: Generate Enhanced Proxy Map - Fixed Schema
 
 on:
   schedule:
@@ -25,418 +145,558 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install folium requests matplotlib pandas
+        run: |
+          pip install --upgrade pip
+          pip install folium requests matplotlib pandas seaborn
 
-      - name: Generate proxy map
+      - name: Generate proxy map with correct schema handling
         run: |
           python3 << 'EOF'
           import requests, folium, pandas as pd, matplotlib.pyplot as plt
-          from folium.plugins import Fullscreen, MiniMap, FloatImage
-          import os
-
-          # Fetch proxy data from multiple sources - ALWAYS use both
-          import re
+          from folium.plugins import Fullscreen, MiniMap, FloatImage, MarkerCluster
+          import os, re, json
           from datetime import datetime
-          
-          def fetch_latest_all_proxies_url():
-              """Find the latest all_proxies_*.json file"""
+          import time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          def fetch_with_retry(url, max_retries=3, timeout=60):
+              """Fetch URL with retry logic"""
+              for attempt in range(max_retries):
+                  try:
+                      print(f"  Attempt {attempt + 1}/{max_retries} for {url}")
+                      response = requests.get(url, timeout=timeout, headers={
+                          'User-Agent': 'ProxyMapBot/1.0',
+                          'Accept': 'application/json'
+                      })
+                      
+                      if response.status_code == 200:
+                          return response.json()
+                      elif response.status_code == 429:
+                          wait_time = 2 ** attempt
+                          print(f"  Rate limited, waiting {wait_time}s...")
+                          time.sleep(wait_time)
+                      else:
+                          print(f"  HTTP {response.status_code}")
+                          
+                  except Exception as e:
+                      print(f"  Error on attempt {attempt + 1}: {e}")
+                  
+                  if attempt < max_retries - 1:
+                      time.sleep(2 ** attempt)
+              
+              return None
+
+          def find_all_proxy_files():
+              """Find ALL proxy files from the GitHub repo"""
               try:
-                  # Get the directory listing from GitHub API
                   api_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
                   response = requests.get(api_url, timeout=30)
                   
                   if response.status_code != 200:
                       print(f"GitHub API returned status {response.status_code}")
-                      return None
+                      return []
                       
                   files = response.json()
                   print(f"Found {len(files)} files in results directory")
                   
-                  # Find all_proxies files and get the latest one
-                  all_proxies_files = []
+                  proxy_files = []
                   for file in files:
                       filename = file['name']
-                      if filename.startswith('all_proxies_') and filename.endswith('.json'):
-                          print(f"Found all_proxies file: {filename}")
-                          # Extract timestamp from filename
-                          match = re.search(r'all_proxies_(\d{8}_\d{6})\.json', filename)
-                          if match:
-                              try:
-                                  timestamp = datetime.strptime(match.group(1), '%Y%m%d_%H%M%S')
-                                  all_proxies_files.append((timestamp, file['download_url'], filename))
-                              except ValueError as e:
-                                  print(f"Could not parse timestamp from {filename}: {e}")
+                      # Look for all types of proxy files
+                      if (filename.endswith('.json') and 
+                          any(keyword in filename.lower() for keyword in [
+                              'all_proxies', 'working_proxies', 'verified_proxies', 
+                              'socks4', 'socks5', 'http', 'https'
+                          ])):
+                          print(f"Found proxy file: {filename}")
+                          proxy_files.append((file['download_url'], filename))
                   
-                  if all_proxies_files:
-                      # Sort by timestamp and get the latest
-                      all_proxies_files.sort(key=lambda x: x[0], reverse=True)
-                      latest_file = all_proxies_files[0]
-                      print(f"Latest all_proxies file: {latest_file[2]} ({latest_file[0]})")
-                      return latest_file[1], latest_file[2]
-                  else:
-                      print("No all_proxies files found with valid timestamps")
-                      return None, None
+                  print(f"Total proxy files found: {len(proxy_files)}")
+                  return proxy_files
                       
               except Exception as e:
-                  print(f"Error finding latest all_proxies file: {e}")
-                  import traceback
-                  traceback.print_exc()
-                  return None, None
+                  print(f"Error finding proxy files: {e}")
+                  return []
 
-          # Data sources - ALWAYS fetch both
-          summary_url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
-          all_proxies_url, all_proxies_filename = fetch_latest_all_proxies_url()
-          
-          proxies = []
-          data_sources = []
-          
-          # MANDATORY: Fetch summary data first (sample proxies with rich metadata)
-          print("=== FETCHING SUMMARY DATA (REQUIRED) ===")
-          try:
-              print(f"Fetching summary data from: {summary_url}")
-              summary_response = requests.get(summary_url, timeout=30)
-              if summary_response.status_code == 200:
-                  summary_data = summary_response.json()
-                  print(f"Summary data type: {type(summary_data)}")
-                  print(f"Summary data keys: {list(summary_data.keys()) if isinstance(summary_data, dict) else 'Not a dict'}")
+          def process_summary_data(summary_data):
+              """Process the summary JSON with your exact schema"""
+              proxies = []
+              
+              if not summary_data or not isinstance(summary_data, dict):
+                  return proxies
+              
+              print(f"Processing summary data with keys: {list(summary_data.keys())}")
+              
+              # Process each protocol type (socks4, http, socks5)
+              for protocol_type, protocol_data in summary_data.items():
+                  if not isinstance(protocol_data, dict):
+                      continue
                   
-                  summary_count = 0
-                  for group_name, group in summary_data.items():
-                      sample_proxies = group.get("sample_proxies", {})
-                      print(f"Group '{group_name}' has {len(sample_proxies)} sample proxies")
-                      
-                      for proxy in sample_proxies.values():
-                          loc = proxy.get("location", {})
-                          if loc.get("lat") and loc.get("lon"):
-                              proxies.append({
-                                  "ip": proxy["ip"],
-                                  "port": proxy.get("port", "Unknown"),
-                                  "latency": proxy.get("latency_ms", 9999),
-                                  "anonymity": proxy.get("anonymity", "Unknown"),
-                                  "lat": loc["lat"],
-                                  "lon": loc["lon"],
-                                  "city": loc.get("city", "Unknown"),
-                                  "country": loc.get("country", "Unknown"),
-                                  "code": loc.get("countryCode", "xx"),
-                                  "isp": loc.get("isp", "N/A"),
-                                  "source": "summary",
-                                  "protocol": proxy.get("protocol", "HTTP")
-                              })
-                              summary_count += 1
+                  print(f"\n=== Processing {protocol_type.upper()} ===")
+                  print(f"  Total scraped: {protocol_data.get('total_scraped', 0):,}")
+                  print(f"  Verified proxies: {protocol_data.get('verified_proxies', 0)}")
+                  print(f"  Success rate: {protocol_data.get('verification_success_rate', 'Unknown')}")
                   
-                  data_sources.append(f"Summary: {summary_count} proxies")
-                  print(f"✅ Successfully loaded {summary_count} proxies from summary")
-              else:
-                  print(f"❌ Failed to fetch summary data: HTTP {summary_response.status_code}")
+                  # Get sample proxies
+                  sample_proxies = protocol_data.get('sample_proxies', {})
+                  print(f"  Sample proxies available: {len(sample_proxies)}")
                   
-          except Exception as e:
-              print(f"❌ Error fetching summary data: {e}")
-              import traceback
-              traceback.print_exc()
-
-          # MANDATORY: Fetch complete dataset 
-          print(f"\n=== FETCHING COMPLETE DATASET (REQUIRED) ===")
-          if all_proxies_url:
-              try:
-                  print(f"Fetching complete dataset from: {all_proxies_filename}")
-                  print(f"URL: {all_proxies_url}")
-                  
-                  all_proxies_response = requests.get(all_proxies_url, timeout=120)
-                  if all_proxies_response.status_code == 200:
-                      all_proxies_data = all_proxies_response.json()
-                      
-                      print(f"Complete dataset type: {type(all_proxies_data)}")
-                      if isinstance(all_proxies_data, (list, dict)):
-                          print(f"Complete dataset size: {len(all_proxies_data)}")
-                      
-                      # Handle different data structures
-                      proxy_list = []
-                      if isinstance(all_proxies_data, list):
-                          proxy_list = all_proxies_data
-                          print("✅ Data is a simple list")
-                      elif isinstance(all_proxies_data, dict):
-                          print("🔍 Data is a dictionary, extracting proxies...")
-                          for key, value in all_proxies_data.items():
-                              print(f"  Key '{key}': {type(value)} with {len(value) if isinstance(value, (list, dict)) else 'unknown'} items")
-                              if isinstance(value, list):
-                                  proxy_list.extend(value)
-                              elif isinstance(value, dict):
-                                  if 'proxies' in value:
-                                      proxy_list.extend(value['proxies'])
-                                  elif 'sample_proxies' in value:
-                                      proxy_list.extend(value['sample_proxies'].values())
-                                  else:
-                                      # Assume the dict values are proxy objects
-                                      proxy_list.extend(value.values())
-                      
-                      print(f"✅ Extracted {len(proxy_list)} total proxies from complete dataset")
-                      
-                      # Debug: Show a sample of what we extracted
-                      if len(proxy_list) > 0:
-                          print(f"🔍 Sample of extracted data:")
-                          for j, sample in enumerate(proxy_list[:3]):
-                              print(f"  Item {j}: {type(sample)} - {sample if not isinstance(sample, dict) else f'dict with keys: {list(sample.keys())[:5]}'}")
-                      
-                      
-                      # Process complete dataset
-                      initial_count = len(proxies)
-                      existing_ips = {p["ip"] for p in proxies}
-                      processed_count = 0
-                      added_count = 0
-                      
-                      for i, proxy in enumerate(proxy_list):
-                          if i % 2000 == 0 and i > 0:
-                              print(f"  Processing: {i}/{len(proxy_list)} ({added_count} added so far)")
+                  for proxy_key, proxy_data in sample_proxies.items():
+                      try:
+                          location = proxy_data.get('location', {})
                           
-                          # Handle different proxy formats
-                          proxy_ip = proxy.get("ip") or proxy.get("host") or proxy.get("address")
-                          if not proxy_ip:
-                              continue
-                              
-                          if proxy_ip in existing_ips:
-                              continue
-                          
-                          # Try different location field names
-                          loc = (proxy.get("location") or 
-                                 proxy.get("geo") or 
-                                 proxy.get("geolocation") or 
-                                 {})
-                          
-                          # Try different lat/lon field names
-                          lat = (loc.get("lat") or loc.get("latitude") or 
-                                 proxy.get("lat") or proxy.get("latitude"))
-                          lon = (loc.get("lon") or loc.get("lng") or loc.get("longitude") or 
-                                 proxy.get("lon") or proxy.get("lng") or proxy.get("longitude"))
+                          # Extract coordinates
+                          lat = location.get('lat')
+                          lon = location.get('lon')
                           
                           if lat is not None and lon is not None:
-                              try:
-                                  # Ensure lat/lon are numbers
-                                  lat = float(lat)
-                                  lon = float(lon)
-                                  
-                                  # Validate coordinates
-                                  if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                      # Get latency from various possible fields
-                                      latency = (proxy.get("latency_ms") or 
-                                               proxy.get("response_time_ms") or 
-                                               proxy.get("latency") or 
-                                               proxy.get("response_time") or 
-                                               9999)
-                                      
-                                      if isinstance(latency, str):
-                                          try:
-                                              latency = float(latency.replace('ms', '').strip())
-                                          except:
-                                              latency = 9999
-                                      
-                                      proxies.append({
-                                          "ip": proxy_ip,
-                                          "port": proxy.get("port", "Unknown"),
-                                          "latency": float(latency) if latency != 9999 else 9999,
-                                          "anonymity": proxy.get("anonymity", "Unknown"),
-                                          "lat": lat,
-                                          "lon": lon,
-                                          "city": loc.get("city", "Unknown"),
-                                          "country": loc.get("country", "Unknown"),
-                                          "code": loc.get("countryCode", "xx"),
-                                          "isp": loc.get("isp", "N/A"),
-                                          "source": "complete",
-                                          "protocol": proxy.get("protocol", "HTTP")
-                                      })
-                                      existing_ips.add(proxy_ip)
-                                      added_count += 1
-                                      
-                              except (ValueError, TypeError):
-                                  continue
+                              lat, lon = float(lat), float(lon)
+                              
+                              if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                  proxies.append({
+                                      "ip": proxy_data.get('ip', ''),
+                                      "port": proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown',
+                                      "latency": proxy_data.get('latency_ms', 9999),
+                                      "anonymity": proxy_data.get('anonymity', 'Unknown'),
+                                      "lat": lat,
+                                      "lon": lon,
+                                      "city": location.get('city', 'Unknown'),
+                                      "country": location.get('country', 'Unknown'),
+                                      "code": location.get('countryCode', 'xx').lower(),
+                                      "isp": location.get('isp', 'N/A'),
+                                      "source": f"summary_{protocol_type}",
+                                      "protocol": proxy_data.get('type', protocol_type),
+                                      "last_checked": proxy_data.get('last_checked', 'Unknown'),
+                                      "region": location.get('region', 'Unknown'),
+                                      "org": location.get('org', 'N/A'),
+                                      "as": location.get('as', 'N/A'),
+                                      "timezone": location.get('timezone', 'Unknown')
+                                  })
+                      except Exception as e:
+                          print(f"    Error processing proxy {proxy_key}: {e}")
+                          continue
+              
+              print(f"✅ Extracted {len(proxies)} valid proxies from summary")
+              return proxies
+
+          def process_complete_file_data(file_data, filename):
+              """Process complete proxy files that may have different structures"""
+              proxies = []
+              
+              if not file_data:
+                  return proxies
+              
+              print(f"Processing {filename}: {type(file_data)}")
+              
+              # Handle different file structures
+              proxy_candidates = []
+              
+              if isinstance(file_data, list):
+                  proxy_candidates = file_data
+              elif isinstance(file_data, dict):
+                  # If it's a dict, look for proxy lists in various keys
+                  for key, value in file_data.items():
+                      if isinstance(value, list):
+                          proxy_candidates.extend(value)
+                      elif isinstance(value, dict):
+                          # Check if it's a protocol group like our summary
+                          if 'sample_proxies' in value:
+                              for proxy_key, proxy_data in value['sample_proxies'].items():
+                                  proxy_candidates.append(proxy_data)
+                          elif any(field in value for field in ['ip', 'host', 'address']):
+                              proxy_candidates.append(value)
+                          else:
+                              # Might be nested proxy objects
+                              for nested_key, nested_value in value.items():
+                                  if isinstance(nested_value, dict) and any(field in nested_value for field in ['ip', 'host', 'location']):
+                                      proxy_candidates.append(nested_value)
+              
+              print(f"  Found {len(proxy_candidates)} proxy candidates")
+              
+              for i, proxy in enumerate(proxy_candidates):
+                  if i % 1000 == 0 and i > 0:
+                      print(f"    Processing: {i}/{len(proxy_candidates)}")
+                  
+                  if not isinstance(proxy, dict):
+                      continue
+                  
+                  # Extract IP
+                  proxy_ip = proxy.get('ip') or proxy.get('host') or proxy.get('address')
+                  if not proxy_ip:
+                      continue
+                  
+                  # Extract location
+                  location = proxy.get('location', {})
+                  if not location:
+                      # Sometimes location data is at root level
+                      if 'lat' in proxy and 'lon' in proxy:
+                          location = proxy
+                  
+                  lat = location.get('lat')
+                  lon = location.get('lon')
+                  
+                  if lat is not None and lon is not None:
+                      try:
+                          lat, lon = float(lat), float(lon)
                           
-                          processed_count += 1
-                      
-                      data_sources.append(f"Complete dataset ({all_proxies_filename}): +{added_count} additional proxies")
-                      print(f"✅ Successfully added {added_count} additional proxies from complete dataset")
-                      print(f"📊 Processed {processed_count} total records, {added_count} had valid coordinates")
-                  else:
-                      print(f"❌ Failed to fetch complete dataset: HTTP {all_proxies_response.status_code}")
-                      
-              except Exception as e:
-                  print(f"❌ Error fetching complete dataset: {e}")
-                  import traceback
-                  traceback.print_exc()
+                          if -90 <= lat <= 90 and -180 <= lon <= 180:
+                              proxies.append({
+                                  "ip": proxy_ip,
+                                  "port": proxy.get('port', 'Unknown'),
+                                  "latency": proxy.get('latency_ms') or proxy.get('latency', 9999),
+                                  "anonymity": proxy.get('anonymity', 'Unknown'),
+                                  "lat": lat,
+                                  "lon": lon,
+                                  "city": location.get('city', 'Unknown'),
+                                  "country": location.get('country', 'Unknown'),
+                                  "code": location.get('countryCode', 'xx').lower(),
+                                  "isp": location.get('isp', 'N/A'),
+                                  "source": filename,
+                                  "protocol": proxy.get('type') or proxy.get('protocol', 'Unknown'),
+                                  "last_checked": proxy.get('last_checked', 'Unknown')
+                              })
+                      except (ValueError, TypeError):
+                          continue
+              
+              print(f"✅ Extracted {len(proxies)} valid proxies from {filename}")
+              return proxies
+
+          # Initialize data collection
+          all_proxies = []
+          data_sources = []
+          
+          print("=== COMPREHENSIVE PROXY DATA COLLECTION ===")
+          print(f"Starting at: {datetime.now()}")
+          
+          # 1. MANDATORY: Fetch summary data (this gives us the verified proxies)
+          print("\n1. Fetching SUMMARY data (verified proxies)...")
+          summary_url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
+          summary_data = fetch_with_retry(summary_url)
+          
+          if summary_data:
+              summary_proxies = process_summary_data(summary_data)
+              all_proxies.extend(summary_proxies)
+              data_sources.append(f"Summary (verified): {len(summary_proxies)} proxies")
+              
+              # Show protocol breakdown
+              protocol_counts = {}
+              for proxy in summary_proxies:
+                  protocol = proxy.get('protocol', 'Unknown')
+                  protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
+              print(f"  Protocol breakdown: {protocol_counts}")
           else:
-              print("❌ Could not find latest all_proxies file - this is REQUIRED!")
-              # Don't exit, but note the issue
-              data_sources.append("⚠️  Complete dataset: Not found")
+              print("❌ Failed to fetch summary data - this is critical!")
+          
+          # 2. Fetch additional complete datasets
+          print("\n2. Finding additional proxy files...")
+          proxy_files = find_all_proxy_files()
+          
+          if proxy_files:
+              print(f"Processing {len(proxy_files)} additional files...")
+              
+              # Limit concurrent processing to avoid overwhelming GitHub API
+              MAX_FILES = 10  # Process top 10 files to avoid rate limits
+              files_to_process = proxy_files[:MAX_FILES]
+              
+              def fetch_and_process_file(file_info):
+                  url, filename = file_info
+                  print(f"\nFetching {filename}...")
+                  
+                  file_data = fetch_with_retry(url, max_retries=2, timeout=90)
+                  if file_data:
+                      return process_complete_file_data(file_data, filename)
+                  return []
+              
+              # Process files with threading but controlled
+              with ThreadPoolExecutor(max_workers=3) as executor:
+                  future_to_file = {executor.submit(fetch_and_process_file, file_info): file_info 
+                                   for file_info in files_to_process}
+                  
+                  for future in as_completed(future_to_file):
+                      file_info = future_to_file[future]
+                      try:
+                          file_proxies = future.result()
+                          if file_proxies:
+                              # Remove duplicates based on IP
+                              existing_ips = {p["ip"] for p in all_proxies}
+                              new_proxies = [p for p in file_proxies if p["ip"] not in existing_ips]
+                              
+                              if new_proxies:
+                                  all_proxies.extend(new_proxies)
+                                  data_sources.append(f"{file_info[1]}: +{len(new_proxies)} additional")
+                                  print(f"✅ Added {len(new_proxies)} new proxies from {file_info[1]}")
+                              else:
+                                  print(f"ℹ️  No new proxies from {file_info[1]} (all duplicates)")
+                      except Exception as e:
+                          print(f"❌ Error processing {file_info[1]}: {e}")
 
           print(f"\n=== FINAL RESULTS ===")
-          print(f"Total proxies loaded: {len(proxies)}")
-          for source in data_sources:
-              print(f"  - {source}")
+          print(f"🎉 Total unique proxies collected: {len(all_proxies):,}")
+          print(f"📊 Data sources used: {len(data_sources)}")
+          
+          for i, source in enumerate(data_sources, 1):
+              print(f"  {i}. {source}")
 
-          if not proxies:
-              print("No proxy data found")
+          if not all_proxies:
+              print("❌ No proxy data found - cannot generate map")
               exit(1)
 
-          df = pd.DataFrame(proxies)
-          lat, lon = df["lat"].mean(), df["lon"].mean()
+          # Analyze the data
+          df = pd.DataFrame(all_proxies)
+          
+          print(f"\n📈 ANALYSIS:")
+          print(f"  🌍 Countries represented: {df['country'].nunique()}")
+          print(f"  ⚡ Average latency: {df['latency'].mean():.0f}ms")
+          print(f"  🚀 Fast proxies (<1000ms): {len(df[df['latency'] < 1000])}")
+          print(f"  🟡 Medium proxies (1000-2000ms): {len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])}")
+          print(f"  🔴 Slow proxies (>2000ms): {len(df[df['latency'] >= 2000])}")
+          
+          # Show top countries
+          top_countries = df['country'].value_counts().head(10)
+          print(f"  🏆 Top countries:")
+          for country, count in top_countries.items():
+              print(f"    {country}: {count}")
 
-          # Create the map
+          # Generate the enhanced map
+          print(f"\n🗺️ Generating interactive map...")
+          
+          # Calculate map center
+          lat_center, lon_center = df["lat"].mean(), df["lon"].mean()
+
+          # Create map with better styling
           m = folium.Map(
-              location=[lat, lon], 
+              location=[lat_center, lon_center], 
               zoom_start=2, 
-              tiles="CartoDB positron", 
+              tiles="CartoDB dark_matter",  # Dark theme looks better
               control_scale=True
           )
           
-          # Add plugins
+          # Add map plugins
           Fullscreen().add_to(m)
-          MiniMap(toggle_display=True).add_to(m)
+          MiniMap(toggle_display=True, position='bottomright').add_to(m)
+          
+          # Use marker clustering for performance
+          marker_cluster = MarkerCluster(
+              name="Proxy Locations",
+              overlay=True,
+              control=True,
+              options={
+                  'maxClusterRadius': 50,
+                  'disableClusteringAtZoom': 10
+              }
+          ).add_to(m)
 
-          # Add markers for each proxy with enhanced info
+          # Add markers with enhanced styling
           for _, row in df.iterrows():
-              color = 'green' if row["latency"] < 1000 else 'orange' if row["latency"] < 2000 else 'red'
-              flag = f"https://flagcdn.com/24x18/{row['code'].lower()}.png"
+              # Color coding based on latency
+              if row["latency"] < 1000:
+                  color = '#00ff00'  # Bright green for fast
+                  size = 8
+              elif row["latency"] < 2000:
+                  color = '#ffa500'  # Orange for medium
+                  size = 6
+              else:
+                  color = '#ff0000'  # Red for slow
+                  size = 4
               
-              # Enhanced popup with more details
-              popup = f"""
-              <div style='font-family:Arial; font-size:13px; width:280px'>
-                <img src='{flag}' style='vertical-align:middle' onerror="this.style.display='none'"> 
-                <b>{row['country']}</b><br>
-                <hr style='margin: 5px 0;'>
-                <b>🌐 IP:</b> {row['ip']}:{row.get('port', 'N/A')}<br>
-                <b>📍 City:</b> {row['city']}<br>
-                <b>🏢 ISP:</b> {row['isp']}<br>
-                <b>⚡ Latency:</b> {row['latency']} ms<br>
-                <b>🔒 Anonymity:</b> {row['anonymity']}<br>
-                <b>📡 Protocol:</b> {row.get('protocol', 'HTTP')}<br>
-                <b>📊 Source:</b> {row.get('source', 'summary').title()}
+              # Country flag URL
+              flag_url = f"https://flagcdn.com/24x18/{row['code']}.png"
+              
+              # Enhanced popup with all available data
+              popup_content = f"""
+              <div style='font-family: Arial, sans-serif; font-size: 12px; width: 320px; padding: 5px;'>
+                <div style='background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px; margin: -5px -5px 10px -5px; border-radius: 4px;'>
+                  <img src='{flag_url}' style='vertical-align: middle; margin-right: 8px;' onerror="this.style.display='none'"> 
+                  <strong style='font-size: 14px;'>{row['country']}</strong>
+                </div>
+                
+                <table style='width: 100%; font-size: 11px;'>
+                  <tr><td><strong>🌐 IP:Port</strong></td><td>{row['ip']}:{row['port']}</td></tr>
+                  <tr><td><strong>📍 Location</strong></td><td>{row['city']}, {row.get('region', 'N/A')}</td></tr>
+                  <tr><td><strong>🏢 ISP</strong></td><td>{row['isp']}</td></tr>
+                  <tr><td><strong>⚡ Latency</strong></td><td>{row['latency']} ms</td></tr>
+                  <tr><td><strong>🔒 Anonymity</strong></td><td>{row['anonymity']}</td></tr>
+                  <tr><td><strong>📡 Protocol</strong></td><td>{row['protocol'].upper()}</td></tr>
+                  <tr><td><strong>📊 Source</strong></td><td>{row['source']}</td></tr>
+                  <tr><td><strong>🕒 Last Check</strong></td><td>{row.get('last_checked', 'Unknown')}</td></tr>
+                  {f"<tr><td><strong>🏗️ Org</strong></td><td>{row.get('org', 'N/A')}</td></tr>" if row.get('org') != 'N/A' else ""}
+                  {f"<tr><td><strong>🌍 AS</strong></td><td>{row.get('as', 'N/A')}</td></tr>" if row.get('as') != 'N/A' else ""}
+                </table>
               </div>
               """
               
-              # Different marker styles based on source
-              marker_size = 8 if row.get('source') == 'complete' else 6
-              opacity = 0.8 if row.get('source') == 'complete' else 0.9
-              
               folium.CircleMarker(
                   location=[row["lat"], row["lon"]],
-                  radius=marker_size,
-                  color=color,
+                  radius=size,
+                  color='white',
+                  weight=1,
                   fill=True,
-                  fill_opacity=opacity,
-                  popup=folium.Popup(popup, max_width=320),
-                  tooltip=f"{row['ip']} ({row['country']}) - {row.get('source', 'summary').title()}"
-              ).add_to(m)
+                  fillColor=color,
+                  fillOpacity=0.8,
+                  popup=folium.Popup(popup_content, max_width=350),
+                  tooltip=f"{row['ip']} | {row['country']} | {row['latency']}ms"
+              ).add_to(marker_cluster)
 
-          # Create country distribution chart with better styling
-          top_countries = df["country"].value_counts().nlargest(8)
-          plt.figure(figsize=(8, 5))
-          plt.style.use('seaborn-v0_8')
-          
-          colors = plt.cm.Set3(range(len(top_countries)))
-          bars = plt.barh(range(len(top_countries)), top_countries.values, color=colors)
-          
-          plt.yticks(range(len(top_countries)), top_countries.index)
-          plt.xlabel("Number of Proxies", fontsize=11, fontweight='bold')
-          plt.title("Top Countries by Proxy Count", fontsize=12, fontweight='bold', pad=15)
-          plt.grid(axis='x', alpha=0.3, linestyle='--')
-          
-          # Add value labels on bars
-          for i, (country, count) in enumerate(top_countries.items()):
-              plt.text(count + 0.5, i, str(count), va='center', ha='left', fontweight='bold', fontsize=9)
-          
-          # Style improvements
-          plt.gca().spines['top'].set_visible(False)
-          plt.gca().spines['right'].set_visible(False)
-          plt.gca().spines['left'].set_visible(False)
-          plt.tight_layout()
-
-          # Create output directory
+          # Create enhanced visualizations
           os.makedirs("public", exist_ok=True)
           
-          # Save chart with white background
-          plt.savefig("public/country_chart.png", dpi=120, bbox_inches='tight', 
-                     facecolor='white', edgecolor='none')
+          # Country distribution chart
+          plt.style.use('dark_background')
+          fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+          
+          # Top countries bar chart
+          top_countries = df["country"].value_counts().nlargest(12)
+          colors = plt.cm.viridis(range(len(top_countries)))
+          
+          bars = ax1.barh(range(len(top_countries)), top_countries.values, color=colors)
+          ax1.set_yticks(range(len(top_countries)))
+          ax1.set_yticklabels(top_countries.index)
+          ax1.set_xlabel("Number of Proxies", fontweight='bold')
+          ax1.set_title(f"Top Countries ({len(all_proxies):,} total proxies)", fontweight='bold', pad=20)
+          ax1.grid(axis='x', alpha=0.3)
+          
+          # Add value labels
+          for i, (country, count) in enumerate(top_countries.items()):
+              ax1.text(count + max(top_countries.values()) * 0.01, i, str(count), 
+                      va='center', ha='left', fontweight='bold')
+          
+          # Protocol distribution pie chart
+          protocol_counts = df['protocol'].value_counts()
+          ax2.pie(protocol_counts.values, labels=protocol_counts.index, autopct='%1.1f%%', 
+                  colors=plt.cm.Set3(range(len(protocol_counts))))
+          ax2.set_title("Protocol Distribution", fontweight='bold', pad=20)
+          
+          plt.tight_layout()
+          plt.savefig("public/analysis_charts.png", dpi=150, bbox_inches='tight', 
+                     facecolor='#2e2e2e', edgecolor='none')
           plt.close()
 
-          # Add enhanced stats info box
+          # Enhanced statistics panel
+          fast_count = len(df[df['latency'] < 1000])
+          medium_count = len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])
+          slow_count = len(df[df['latency'] >= 2000])
+          
           stats_html = f"""
           <div style="position: fixed; 
-                      top: 10px; left: 10px; width: 220px; 
-                      background-color: rgba(255,255,255,0.95); 
-                      border: 2px solid #333; border-radius: 8px;
-                      z-index: 9999; font-size: 12px; padding: 12px;
-                      box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
-          <h4 style="margin: 0 0 8px 0; color: #333;">📊 Proxy Statistics</h4>
-          <div style="color: #555;">
-            <strong>Total Proxies:</strong> {len(proxies)}<br>
-            <strong>Countries:</strong> {df['country'].nunique()}<br>
-            <strong>Avg Latency:</strong> {df['latency'].mean():.0f}ms<br>
-            <strong>Data Sources:</strong> {len(data_sources)}<br>
-            <strong>Last Update:</strong> Now
+                      top: 10px; left: 10px; width: 320px; 
+                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
+                      border: 2px solid #667eea; border-radius: 12px;
+                      z-index: 9999; font-size: 13px; padding: 16px;
+                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
+          
+          <div style="text-align: center; margin-bottom: 12px;">
+            <h3 style="margin: 0; color: #667eea; font-size: 18px;">🗺️ Proxy Network Map</h3>
+            <div style="font-size: 11px; color: #aaa; margin-top: 4px;">
+              Real-time Global Proxy Intelligence
+            </div>
           </div>
-          <hr style="margin: 8px 0;">
-          <div style="font-size: 10px; color: #777;">
-            {'<br>'.join(data_sources)}
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+            <div style="background: rgba(102, 126, 234, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
+              <div style="font-size: 18px; font-weight: bold; color: #667eea;">{len(all_proxies):,}</div>
+              <div style="font-size: 10px; color: #ccc;">Total Proxies</div>
+            </div>
+            <div style="background: rgba(118, 75, 162, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
+              <div style="font-size: 18px; font-weight: bold; color: #764ba2;">{df['country'].nunique()}</div>
+              <div style="font-size: 10px; color: #ccc;">Countries</div>
+            </div>
+          </div>
+          
+          <div style="margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-size: 12px;">⚡ Avg Latency:</span>
+              <span style="font-weight: bold; color: #ffa500;">{df['latency'].mean():.0f}ms</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-size: 12px;">📊 Data Sources:</span>
+              <span style="font-weight: bold; color: #64ffda;">{len(data_sources)}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 12px;">🕒 Last Update:</span>
+              <span style="font-weight: bold; color: #ff6b6b;">{datetime.now().strftime('%H:%M UTC')}</span>
+            </div>
+          </div>
+          
+          <div style="background: rgba(255,255,255,0.1); padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+            <div style="font-size: 11px; color: #ccc; margin-bottom: 6px; text-align: center;">Performance Distribution</div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px;">
+              <div style="text-align: center;">
+                <div style="color: #00ff00; font-weight: bold;">{fast_count}</div>
+                <div style="color: #aaa;">Fast</div>
+              </div>
+              <div style="text-align: center;">
+                <div style="color: #ffa500; font-weight: bold;">{medium_count}</div>
+                <div style="color: #aaa;">Medium</div>
+              </div>
+              <div style="text-align: center;">
+                <div style="color: #ff0000; font-weight: bold;">{slow_count}</div>
+                <div style="color: #aaa;">Slow</div>
+              </div>
+            </div>
+          </div>
+          
+          <div style="font-size: 10px; color: #999; max-height: 80px; overflow-y: auto;">
+            <strong style="color: #667eea;">Data Sources:</strong><br>
+            {'<br>'.join([f"• {source}" for source in data_sources[:8]])}
+            {f'<br>• ...and {len(data_sources)-8} more sources' if len(data_sources) > 8 else ''}
           </div>
           </div>
           """
           
-          # Add improved legend
+          # Enhanced legend
           legend_html = """
           <div style="position: fixed; 
-                      top: 10px; right: 10px; width: 140px; 
-                      background-color: rgba(255,255,255,0.95); 
-                      border: 2px solid #333; border-radius: 8px;
-                      z-index: 9999; font-size: 12px; padding: 12px;
-                      box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
-          <h4 style="margin: 0 0 8px 0; color: #333;">🚦 Latency</h4>
-          <div style="display: flex; align-items: center; margin: 4px 0;">
-            <div style="width: 12px; height: 12px; background-color: green; border-radius: 50%; margin-right: 8px;"></div>
-            <span style="color: #555;">< 1000ms</span>
+                      top: 10px; right: 10px; width: 180px; 
+                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
+                      border: 2px solid #764ba2; border-radius: 12px;
+                      z-index: 9999; font-size: 13px; padding: 16px;
+                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
+          
+          <h4 style="margin: 0 0 12px 0; color: #764ba2; text-align: center;">🚦 Latency Legend</h4>
+          
+          <div style="margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 16px; height: 16px; background: #00ff00; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">< 1000ms (Excellent)</span>
+            </div>
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 14px; height: 14px; background: #ffa500; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">1000-2000ms (Good)</span>
+            </div>
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 12px; height: 12px; background: #ff0000; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">> 2000ms (Slow)</span>
+            </div>
           </div>
-          <div style="display: flex; align-items: center; margin: 4px 0;">
-            <div style="width: 12px; height: 12px; background-color: orange; border-radius: 50%; margin-right: 8px;"></div>
-            <span style="color: #555;">1000-2000ms</span>
-          </div>
-          <div style="display: flex; align-items: center; margin: 4px 0;">
-            <div style="width: 12px; height: 12px; background-color: red; border-radius: 50%; margin-right: 8px;"></div>
-            <span style="color: #555;">> 2000ms</span>
+          
+          <div style="border-top: 1px solid #444; padding-top: 8px; font-size: 11px; color: #bbb; text-align: center;">
+            💡 Click markers for details<br>
+            🔍 Zoom to explore regions<br>
+            📊 Clusters show proxy density
           </div>
           </div>
           """
           
-          # Add chart as floating image - positioned better
-          FloatImage("public/country_chart.png", bottom=15, right=15).add_to(m)
+          # Add the charts as floating image
+          FloatImage("public/analysis_charts.png", bottom=20, right=20).add_to(m)
           
-          # Add both info boxes
+          # Add the info panels
           m.get_root().html.add_child(folium.Element(stats_html))
           m.get_root().html.add_child(folium.Element(legend_html))
           
-          # Save map
+          # Save the map
           m.save("public/index.html")
           
-          print(f"Generated map with {len(proxies)} proxies from {df['country'].nunique()} countries")
+          print(f"\n🎉 SUCCESS!")
+          print(f"✅ Generated interactive map with {len(all_proxies):,} proxies")
+          print(f"🌍 Covering {df['country'].nunique()} countries")
+          print(f"📈 That's {len(all_proxies) - 15:,} more proxies than the 15-proxy limit!")
+          print(f"🗺️ Map saved to: public/index.html")
+          print(f"📊 Charts saved to: public/analysis_charts.png")
+          
           EOF
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: public
-
-  deploy:
-    needs: build-and-deploy
-    runs-on: ubuntu-22.04
-    
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    
-    permissions:
-      pages: write
-      id-token: write
-    
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
