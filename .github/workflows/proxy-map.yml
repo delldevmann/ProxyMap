@@ -1,4 +1,4 @@
-name: Generate Enhanced Proxy Map - Fixed Schema
+name: Generate Enhanced Proxy Map - All Sources
 
 on:
   schedule:
@@ -32,7 +32,7 @@ jobs:
           pip install --upgrade pip
           pip install folium requests matplotlib pandas seaborn
 
-      - name: Generate proxy map with correct schema handling
+      - name: Generate proxy map from ALL sources
         run: |
           python3 << 'EOF'
           import requests, folium, pandas as pd, matplotlib.pyplot as plt
@@ -41,6 +41,7 @@ jobs:
           from datetime import datetime
           import time
           from concurrent.futures import ThreadPoolExecutor, as_completed
+          import random
 
           def fetch_with_retry(url, max_retries=3, timeout=60):
               """Fetch URL with retry logic"""
@@ -85,14 +86,18 @@ jobs:
                   proxy_files = []
                   for file in files:
                       filename = file['name']
-                      # Look for all types of proxy files
-                      if (filename.endswith('.json') and 
-                          any(keyword in filename.lower() for keyword in [
-                              'all_proxies', 'working_proxies', 'verified_proxies', 
-                              'socks4', 'socks5', 'http', 'https'
-                          ])):
+                      # Include ALL JSON files that might contain proxies
+                      if filename.endswith('.json'):
                           print(f"Found proxy file: {filename}")
                           proxy_files.append((file['download_url'], filename))
+                  
+                  # Sort files to prioritize newer dates
+                  def extract_date(filename):
+                      # Try to extract date from filename (e.g., all_proxies_20250301_013951.json)
+                      match = re.search(r'(\d{8})', filename)
+                      return match.group(1) if match else '00000000'
+                  
+                  proxy_files.sort(key=lambda x: extract_date(x[1]), reverse=True)
                   
                   print(f"Total proxy files found: {len(proxy_files)}")
                   return proxy_files
@@ -101,131 +106,8 @@ jobs:
                   print(f"Error finding proxy files: {e}")
                   return []
 
-          def process_summary_data(summary_data):
-              """Process the summary JSON with the actual schema format"""
-              proxies = []
-              
-              if not summary_data or not isinstance(summary_data, dict):
-                  return proxies
-              
-              print(f"Processing summary data with keys: {list(summary_data.keys())}")
-              
-              # Check if we have the new schema format with "proxies" key
-              if "proxies" in summary_data:
-                  print(f"\n=== Processing NEW SCHEMA FORMAT ===")
-                  print(f"  Timestamp: {summary_data.get('timestamp', 'Unknown')}")
-                  print(f"  Total proxies: {summary_data.get('total_proxies', 0)}")
-                  
-                  # Get the protocols breakdown
-                  proxies_by_type = summary_data.get("proxies", {})
-                  for protocol_type, protocol_proxies in proxies_by_type.items():
-                      print(f"\n  === Processing {protocol_type.upper()} proxies ===")
-                      print(f"    {protocol_type} proxies count: {summary_data.get(f'{protocol_type}_proxies', 0)}")
-                      print(f"    Actual entries: {len(protocol_proxies)}")
-                      
-                      # Process each proxy in this protocol
-                      for proxy_key, proxy_data in protocol_proxies.items():
-                          try:
-                              # Get location data
-                              location = proxy_data.get('location', {})
-                              
-                              # Extract coordinates
-                              lat = location.get('lat')
-                              lon = location.get('lon')
-                              
-                              if lat is not None and lon is not None:
-                                  lat, lon = float(lat), float(lon)
-                                  
-                                  if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                      # Extract port from the key (IP:PORT format)
-                                      port = proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown'
-                                      
-                                      proxies.append({
-                                          "ip": proxy_data.get('ip', proxy_key.split(':')[0] if ':' in proxy_key else proxy_key),
-                                          "port": port,
-                                          "latency": proxy_data.get('latency_ms', 9999),
-                                          "anonymity": proxy_data.get('anonymity', 'Unknown'),
-                                          "lat": lat,
-                                          "lon": lon,
-                                          "city": location.get('city', 'Unknown'),
-                                          "country": location.get('country', 'Unknown'),
-                                          "code": location.get('countryCode', 'xx').lower(),
-                                          "isp": location.get('isp', 'N/A'),
-                                          "source": f"summary_{protocol_type}",
-                                          "protocol": proxy_data.get('type', protocol_type),
-                                          "last_checked": proxy_data.get('last_checked', 'Unknown'),
-                                          "region": location.get('region', 'Unknown'),
-                                          "org": location.get('org', 'N/A'),
-                                          "as": location.get('as', 'N/A'),
-                                          "timezone": location.get('timezone', 'Unknown')
-                                      })
-                          except Exception as e:
-                              print(f"    Error processing proxy {proxy_key}: {e}")
-                              continue
-              
-                  # Also check if we have country distribution
-                  country_dist = summary_data.get('country_distribution', {})
-                  if country_dist:
-                      top_countries = sorted(country_dist.items(), key=lambda x: x[1], reverse=True)[:10]
-                      print("\n  === Country Distribution (Top 10) ===")
-                      for country, count in top_countries:
-                          print(f"    {country}: {count}")
-              
-              # Fallback for old schema format (if needed)
-              else:
-                  print(f"\n=== Processing OLD SCHEMA FORMAT ===")
-                  # Process each protocol type (socks4, http, socks5)
-                  for protocol_type, protocol_data in summary_data.items():
-                      if not isinstance(protocol_data, dict) or protocol_type in ('timestamp', 'total_proxies'):
-                          continue
-                      
-                      print(f"\n=== Processing {protocol_type.upper()} ===")
-                      
-                      # Check if we have sample_proxies in this format
-                      sample_proxies = protocol_data.get('sample_proxies', {})
-                      if sample_proxies:
-                          print(f"  Sample proxies available: {len(sample_proxies)}")
-                          
-                          for proxy_key, proxy_data in sample_proxies.items():
-                              try:
-                                  location = proxy_data.get('location', {})
-                                  
-                                  # Extract coordinates
-                                  lat = location.get('lat')
-                                  lon = location.get('lon')
-                                  
-                                  if lat is not None and lon is not None:
-                                      lat, lon = float(lat), float(lon)
-                                      
-                                      if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                          proxies.append({
-                                              "ip": proxy_data.get('ip', ''),
-                                              "port": proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown',
-                                              "latency": proxy_data.get('latency_ms', 9999),
-                                              "anonymity": proxy_data.get('anonymity', 'Unknown'),
-                                              "lat": lat,
-                                              "lon": lon,
-                                              "city": location.get('city', 'Unknown'),
-                                              "country": location.get('country', 'Unknown'),
-                                              "code": location.get('countryCode', 'xx').lower(),
-                                              "isp": location.get('isp', 'N/A'),
-                                              "source": f"summary_{protocol_type}",
-                                              "protocol": proxy_data.get('type', protocol_type),
-                                              "last_checked": proxy_data.get('last_checked', 'Unknown'),
-                                              "region": location.get('region', 'Unknown'),
-                                              "org": location.get('org', 'N/A'),
-                                              "as": location.get('as', 'N/A'),
-                                              "timezone": location.get('timezone', 'Unknown')
-                                          })
-                              except Exception as e:
-                                  print(f"    Error processing proxy {proxy_key}: {e}")
-                                  continue
-              
-              print(f"✅ Extracted {len(proxies)} valid proxies from summary")
-              return proxies
-
-          def process_complete_file_data(file_data, filename):
-              """Process complete proxy files that may have different structures"""
+          def process_proxy_data(file_data, filename):
+              """Universal proxy data processor that handles ANY format"""
               proxies = []
               
               if not file_data:
@@ -233,22 +115,20 @@ jobs:
               
               print(f"Processing {filename}: {type(file_data)}")
               
-              # Check if the file has the same structure as the summary file
+              # Method 1: New schema with "proxies" key containing protocols
               if isinstance(file_data, dict) and "proxies" in file_data:
                   print(f"  Found new schema format with 'proxies' key")
                   proxies_by_type = file_data.get("proxies", {})
                   
-                  # Process each protocol
                   for protocol_type, protocol_proxies in proxies_by_type.items():
+                      if not isinstance(protocol_proxies, dict):
+                          continue
+                          
                       print(f"  Processing {protocol_type} proxies: {len(protocol_proxies)} entries")
                       
-                      # Process each proxy entry
                       for proxy_key, proxy_data in protocol_proxies.items():
                           try:
-                              # Get location data
                               location = proxy_data.get('location', {})
-                              
-                              # Extract coordinates
                               lat = location.get('lat')
                               lon = location.get('lon')
                               
@@ -256,7 +136,6 @@ jobs:
                                   lat, lon = float(lat), float(lon)
                                   
                                   if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                      # Extract port from the key (IP:PORT format)
                                       port = proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown'
                                       
                                       proxies.append({
@@ -272,255 +151,152 @@ jobs:
                                           "isp": location.get('isp', 'N/A'),
                                           "source": filename,
                                           "protocol": proxy_data.get('type', protocol_type),
-                                          "last_checked": proxy_data.get('last_checked', 'Unknown'),
-                                          "region": location.get('region', 'Unknown'),
-                                          "org": location.get('org', 'N/A'),
-                                          "as": location.get('as', 'N/A'),
-                                          "timezone": location.get('timezone', 'Unknown')
+                                          "last_checked": proxy_data.get('last_checked', 'Unknown')
                                       })
                           except Exception as e:
-                              if proxy_key.count(':') > 0:  # Only log errors for what look like real proxies
-                                  print(f"    Error processing proxy {proxy_key}: {e}")
                               continue
                   
                   return proxies
               
-              # Handle different file structures for older formats
+              # Method 2: Direct IP:PORT mapping at root level
+              if isinstance(file_data, dict):
+                  # Check if we have IP:PORT pattern keys
+                  ip_port_entries = [k for k in file_data.keys() if ':' in k and '.' in k]
+                  if len(ip_port_entries) > 10:  # Likely a proxy file
+                      print(f"  Found IP:PORT pattern in keys ({len(ip_port_entries)} entries)")
+                      
+                      for ip_port, proxy_info in file_data.items():
+                          if ':' not in ip_port or not isinstance(proxy_info, dict):
+                              continue
+                          
+                          try:
+                              ip, port = ip_port.split(':', 1)
+                              
+                              if 'location' in proxy_info:
+                                  location = proxy_info['location']
+                                  lat = location.get('lat')
+                                  lon = location.get('lon')
+                                  
+                                  if lat is not None and lon is not None:
+                                      lat, lon = float(lat), float(lon)
+                                      
+                                      if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                          proxies.append({
+                                              "ip": ip,
+                                              "port": port,
+                                              "latency": proxy_info.get('latency_ms', proxy_info.get('latency', 9999)),
+                                              "anonymity": proxy_info.get('anonymity', 'Unknown'),
+                                              "lat": lat,
+                                              "lon": lon,
+                                              "city": location.get('city', 'Unknown'),
+                                              "country": location.get('country', 'Unknown'),
+                                              "code": location.get('countryCode', 'xx').lower(),
+                                              "isp": location.get('isp', 'N/A'),
+                                              "source": filename,
+                                              "protocol": proxy_info.get('type', proxy_info.get('protocol', 'http')),
+                                              "last_checked": proxy_info.get('last_checked', 'Unknown')
+                                          })
+                          except Exception:
+                              continue
+                      
+                      return proxies
+              
+              # Method 3: List of proxy objects
               proxy_candidates = []
               
               if isinstance(file_data, list):
                   proxy_candidates = file_data
               elif isinstance(file_data, dict):
-                  # Try several common patterns
+                  # Look for common patterns
+                  for key in ['proxies', 'data', 'results', 'items']:
+                      if key in file_data and isinstance(file_data[key], list):
+                          proxy_candidates = file_data[key]
+                          break
                   
-                  # Pattern 1: "proxies" at root containing a list
-                  if "proxies" in file_data and isinstance(file_data["proxies"], list):
-                      proxy_candidates = file_data["proxies"]
-                  
-                  # Pattern 2: "data" at root containing a list
-                  elif "data" in file_data and isinstance(file_data["data"], list):
-                      proxy_candidates = file_data["data"]
-                  
-                  # Pattern 3: Protocol-specific keys at root
-                  else:
-                      for key, value in file_data.items():
-                          # Skip metadata keys
-                          if key in ["timestamp", "total_proxies", "country_distribution"]:
-                              continue
-                              
-                          if isinstance(value, list):
-                              print(f"  Found list under key '{key}': {len(value)} items")
-                              proxy_candidates.extend(value)
-                          elif isinstance(value, dict):
-                              # Check for nested structure
-                              for sub_key, sub_value in value.items():
-                                  if isinstance(sub_value, list):
-                                      print(f"  Found nested list under '{key}.{sub_key}': {len(sub_value)} items")
-                                      proxy_candidates.extend(sub_value)
-                                  elif isinstance(sub_value, dict) and any(field in sub_value for field in ['ip', 'host', 'address', 'addr']):
-                                      proxy_candidates.append(sub_value)
+                  # Check protocol-specific keys
+                  if not proxy_candidates:
+                      for key in ['http', 'https', 'socks4', 'socks5']:
+                          if key in file_data:
+                              if isinstance(file_data[key], list):
+                                  proxy_candidates.extend(file_data[key])
+                              elif isinstance(file_data[key], dict):
+                                  # Could be nested structure
+                                  sub_data = file_data[key]
+                                  if 'proxies' in sub_data and isinstance(sub_data['proxies'], list):
+                                      proxy_candidates.extend(sub_data['proxies'])
               
               print(f"  Found {len(proxy_candidates)} proxy candidates")
               
-              # Additional check: if no candidates found but we have IP:PORT keys at root
-              if len(proxy_candidates) == 0 and isinstance(file_data, dict):
-                  for key, value in file_data.items():
-                      # Check if key looks like IP:PORT
-                      if ":" in key and isinstance(value, dict):
-                          print(f"  Found IP:PORT pattern in keys, using direct mapping")
-                          # Process direct IP:PORT to data mapping
-                          for ip_port, proxy_info in file_data.items():
-                              if ":" not in ip_port:
-                                  continue
-                                  
-                              ip, port = ip_port.split(":", 1)
-                              
-                              # Check for minimal required data
-                              if isinstance(proxy_info, dict) and "location" in proxy_info:
-                                  location = proxy_info.get("location", {})
-                                  lat = location.get("lat")
-                                  lon = location.get("lon")
-                                  
-                                  if lat is not None and lon is not None:
-                                      try:
-                                          lat, lon = float(lat), float(lon)
-                                          if -90 <= lat <= 90 and -180 <= lon <= 180:
-                                              proxies.append({
-                                                  "ip": ip,
-                                                  "port": port,
-                                                  "latency": proxy_info.get("latency_ms", proxy_info.get("latency", 9999)),
-                                                  "anonymity": proxy_info.get("anonymity", "Unknown"),
-                                                  "lat": lat,
-                                                  "lon": lon, 
-                                                  "city": location.get("city", "Unknown"),
-                                                  "country": location.get("country", "Unknown"),
-                                                  "code": location.get("countryCode", "xx").lower(),
-                                                  "isp": location.get("isp", "N/A"),
-                                                  "source": filename,
-                                                  "protocol": proxy_info.get("type", proxy_info.get("protocol", "Unknown")),
-                                                  "last_checked": proxy_info.get("last_checked", "Unknown")
-                                              })
-                                      except (ValueError, TypeError):
-                                          continue
-                          
-                          # We've processed the direct mapping, return the results
-                          print(f"✅ Extracted {len(proxies)} valid proxies from direct mapping")
-                          return proxies
-              
-              # Process all the candidates we found
-              for i, proxy in enumerate(proxy_candidates):
-                  if i % 1000 == 0 and i > 0:
-                      print(f"    Processing: {i}/{len(proxy_candidates)}")
-                  
+              # Process candidates
+              for proxy in proxy_candidates:
                   if not isinstance(proxy, dict):
                       continue
                   
-                  # Debug problematic proxies
-                  if i < 5 or (i < 20 and i % 5 == 0):
-                      print(f"    Proxy candidate {i}: {list(proxy.keys())}")
-                  
-                  # Extract IP - try various common field names
-                  proxy_ip = None
-                  for ip_field in ['ip', 'host', 'address', 'addr', 'proxy', 'server']:
-                      if ip_field in proxy and proxy[ip_field]:
-                          proxy_ip = proxy[ip_field]
-                          # Clean up IP if it has port attached
-                          if proxy_ip and ':' in proxy_ip:
-                              parts = proxy_ip.split(':')
-                              proxy_ip = parts[0]
-                              if 'port' not in proxy and len(parts) > 1:
-                                  proxy['port'] = parts[1]
-                          break
-                  
-                  # Skip if no IP found
-                  if not proxy_ip:
-                      continue
-                  
-                  # Extract location - try various patterns
-                  location = None
-                  lat, lon = None, None
-                  
-                  # Pattern 1: 'location' object
-                  if 'location' in proxy and isinstance(proxy['location'], dict):
-                      location = proxy['location']
-                      lat = location.get('lat')
-                      lon = location.get('lon')
-                  
-                  # Pattern 2: 'geo' object
-                  elif 'geo' in proxy and isinstance(proxy['geo'], dict):
-                      location = proxy['geo']
-                      lat = location.get('lat', location.get('latitude'))
-                      lon = location.get('lon', location.get('longitude'))
-                  
-                  # Pattern 3: direct lat/lon
-                  elif 'lat' in proxy and 'lon' in proxy:
-                      lat = proxy.get('lat')
-                      lon = proxy.get('lon')
-                      location = proxy  # Use proxy itself for country/city lookup
-                  
-                  # Pattern 4: latitude/longitude
-                  elif 'latitude' in proxy and 'longitude' in proxy:
-                      lat = proxy.get('latitude')
-                      lon = proxy.get('longitude')
-                      location = proxy  # Use proxy itself for country/city lookup
-                  
-                  # Skip if no location found
-                  if lat is None or lon is None:
-                      continue
-                      
                   try:
+                      # Extract IP
+                      ip = None
+                      for field in ['ip', 'host', 'address', 'addr', 'proxy', 'server']:
+                          if field in proxy:
+                              ip = proxy[field]
+                              if ip and ':' in ip:
+                                  ip = ip.split(':')[0]
+                              break
+                      
+                      if not ip:
+                          continue
+                      
+                      # Extract location
+                      lat, lon = None, None
+                      location = {}
+                      
+                      if 'location' in proxy and isinstance(proxy['location'], dict):
+                          location = proxy['location']
+                          lat = location.get('lat', location.get('latitude'))
+                          lon = location.get('lon', location.get('longitude'))
+                      elif 'geo' in proxy and isinstance(proxy['geo'], dict):
+                          location = proxy['geo']
+                          lat = location.get('lat', location.get('latitude'))
+                          lon = location.get('lon', location.get('longitude'))
+                      elif 'lat' in proxy and 'lon' in proxy:
+                          lat = proxy['lat']
+                          lon = proxy['lon']
+                          location = proxy
+                      elif 'latitude' in proxy and 'longitude' in proxy:
+                          lat = proxy['latitude']
+                          lon = proxy['longitude']
+                          location = proxy
+                      
+                      if lat is None or lon is None:
+                          continue
+                      
                       lat, lon = float(lat), float(lon)
                       
                       if -90 <= lat <= 90 and -180 <= lon <= 180:
-                          # Get port - try various field names
-                          port = None
-                          for port_field in ['port', 'Port', 'PORT']:
-                              if port_field in proxy:
-                                  port = proxy[port_field]
-                                  break
+                          # Extract port
+                          port = proxy.get('port', proxy.get('Port', 'Unknown'))
+                          if port == 'Unknown' and ':' in str(proxy.get('ip', '')):
+                              port = proxy['ip'].split(':')[1]
                           
-                          # If no port found in fields, try extracting from IP
-                          if port is None and ':' in proxy_ip:
-                              proxy_ip, port = proxy_ip.split(':', 1)
+                          # Get country info
+                          country = location.get('country', proxy.get('country', 'Unknown'))
+                          country_code = location.get('countryCode', location.get('country_code', proxy.get('country_code', 'xx')))
                           
-                          # Convert port to string if it's not
-                          if port is not None and not isinstance(port, str):
-                              port = str(port)
-                          
-                          # Collect additional location fields with fallbacks
-                          if location:
-                              country = location.get('country', location.get('Country', 'Unknown'))
-                              country_code = location.get('countryCode', location.get('country_code', 'xx'))
-                              city = location.get('city', location.get('City', 'Unknown'))
-                              region = location.get('region', location.get('Region', 'Unknown'))
-                              isp = location.get('isp', location.get('ISP', 'N/A'))
-                              org = location.get('org', location.get('organization', 'N/A'))
-                              asn = location.get('as', location.get('ASN', 'N/A'))
-                              timezone = location.get('timezone', location.get('Timezone', 'Unknown'))
-                          else:
-                              country = proxy.get('country', 'Unknown')
-                              country_code = proxy.get('country_code', 'xx')
-                              city = proxy.get('city', 'Unknown')
-                              region = proxy.get('region', 'Unknown')
-                              isp = proxy.get('isp', 'N/A')
-                              org = proxy.get('org', 'N/A')
-                              asn = proxy.get('as', 'N/A')
-                              timezone = proxy.get('timezone', 'Unknown')
-                          
-                          # Make sure country code is lowercase
-                          if country_code:
-                              country_code = country_code.lower()
-                          
-                          # Get protocol - try various field names
-                          protocol = None
-                          for protocol_field in ['protocol', 'type', 'scheme', 'proto']:
-                              if protocol_field in proxy:
-                                  protocol = proxy[protocol_field]
-                                  break
-                          
-                          # Clean up protocol value
-                          if protocol and isinstance(protocol, str):
-                              protocol = protocol.lower()
-                              if protocol not in ['http', 'https', 'socks4', 'socks5']:
-                                  # Try to normalize protocol values
-                                  if 'sock' in protocol:
-                                      if '4' in protocol:
-                                          protocol = 'socks4'
-                                      elif '5' in protocol:
-                                          protocol = 'socks5'
-                                      else:
-                                          protocol = 'socks'
-                                  elif protocol == 'ssl':
-                                      protocol = 'https'
-                                  else:
-                                      protocol = 'http'  # Default to HTTP
-                          else:
-                              # Default protocol
-                              protocol = 'http'
-                          
-                          # Add proxy to list
                           proxies.append({
-                              "ip": proxy_ip,
-                              "port": port or 'Unknown',
-                              "latency": proxy.get('latency_ms') or proxy.get('latency') or proxy.get('delay') or proxy.get('response_time', 9999),
-                              "anonymity": proxy.get('anonymity') or proxy.get('anon') or proxy.get('anonymity_level', 'Unknown'),
+                              "ip": ip,
+                              "port": str(port),
+                              "latency": proxy.get('latency_ms', proxy.get('latency', proxy.get('delay', 9999))),
+                              "anonymity": proxy.get('anonymity', proxy.get('anon', 'Unknown')),
                               "lat": lat,
                               "lon": lon,
-                              "city": city,
+                              "city": location.get('city', proxy.get('city', 'Unknown')),
                               "country": country,
-                              "code": country_code,
-                              "isp": isp,
+                              "code": country_code.lower() if country_code else 'xx',
+                              "isp": location.get('isp', proxy.get('isp', 'N/A')),
                               "source": filename,
-                              "protocol": protocol,
-                              "last_checked": proxy.get('last_checked') or proxy.get('checked') or proxy.get('timestamp', 'Unknown'),
-                              "region": region,
-                              "org": org,
-                              "as": asn,
-                              "timezone": timezone
+                              "protocol": proxy.get('protocol', proxy.get('type', 'http')),
+                              "last_checked": proxy.get('last_checked', proxy.get('checked', 'Unknown'))
                           })
-                      
-                  except (ValueError, TypeError) as e:
-                      # print(f"    Error with lat/lon: {e}")
+                  except Exception:
                       continue
               
               print(f"✅ Extracted {len(proxies)} valid proxies from {filename}")
@@ -528,40 +304,32 @@ jobs:
 
           # Initialize data collection
           all_proxies = []
+          unique_ips = set()
           data_sources = []
           
           print("=== COMPREHENSIVE PROXY DATA COLLECTION ===")
           print(f"Starting at: {datetime.now()}")
           
-          # 1. MANDATORY: Fetch summary data (this gives us the verified proxies)
-          print("\n1. Fetching SUMMARY data (verified proxies)...")
-          summary_url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
-          summary_data = fetch_with_retry(summary_url)
-          
-          if summary_data:
-              summary_proxies = process_summary_data(summary_data)
-              all_proxies.extend(summary_proxies)
-              data_sources.append(f"Summary (verified): {len(summary_proxies)} proxies")
-              
-              # Show protocol breakdown
-              protocol_counts = {}
-              for proxy in summary_proxies:
-                  protocol = proxy.get('protocol', 'Unknown')
-                  protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
-              print(f"  Protocol breakdown: {protocol_counts}")
-          else:
-              print("❌ Failed to fetch summary data - this is critical!")
-          
-          # 2. Fetch additional complete datasets
-          print("\n2. Finding additional proxy files...")
+          # Get ALL proxy files
+          print("\nFinding ALL proxy files...")
           proxy_files = find_all_proxy_files()
           
-          if proxy_files:
-              print(f"Processing {len(proxy_files)} additional files...")
-              
-              # Limit concurrent processing to avoid overwhelming GitHub API
-              MAX_FILES = 10  # Process top 10 files to avoid rate limits
-              files_to_process = proxy_files[:MAX_FILES]
+          if not proxy_files:
+              print("❌ No proxy files found!")
+              exit(1)
+          
+          print(f"\n📊 Will process {len(proxy_files)} proxy files")
+          
+          # Process files in batches to avoid overwhelming the system
+          BATCH_SIZE = 5
+          MAX_FILES = 50  # Increase limit to get more data
+          
+          files_to_process = proxy_files[:MAX_FILES]
+          processed_count = 0
+          
+          for i in range(0, len(files_to_process), BATCH_SIZE):
+              batch = files_to_process[i:i + BATCH_SIZE]
+              print(f"\n--- Processing batch {i//BATCH_SIZE + 1}/{(len(files_to_process) + BATCH_SIZE - 1)//BATCH_SIZE} ---")
               
               def fetch_and_process_file(file_info):
                   url, filename = file_info
@@ -569,71 +337,96 @@ jobs:
                   
                   file_data = fetch_with_retry(url, max_retries=2, timeout=90)
                   if file_data:
-                      return process_complete_file_data(file_data, filename)
-                  return []
+                      return process_proxy_data(file_data, filename), filename
+                  return [], filename
               
-              # Process files with threading but controlled
+              # Process batch with threading
               with ThreadPoolExecutor(max_workers=3) as executor:
                   future_to_file = {executor.submit(fetch_and_process_file, file_info): file_info 
-                                   for file_info in files_to_process}
+                                   for file_info in batch}
                   
                   for future in as_completed(future_to_file):
-                      file_info = future_to_file[future]
                       try:
-                          file_proxies = future.result()
+                          file_proxies, filename = future.result()
                           if file_proxies:
-                              # Remove duplicates based on IP
-                              existing_ips = {p["ip"] for p in all_proxies}
-                              new_proxies = [p for p in file_proxies if p["ip"] not in existing_ips]
+                              # Add only unique IPs
+                              new_proxies = []
+                              for proxy in file_proxies:
+                                  if proxy["ip"] not in unique_ips:
+                                      unique_ips.add(proxy["ip"])
+                                      new_proxies.append(proxy)
                               
                               if new_proxies:
                                   all_proxies.extend(new_proxies)
-                                  data_sources.append(f"{file_info[1]}: +{len(new_proxies)} additional")
-                                  print(f"✅ Added {len(new_proxies)} new proxies from {file_info[1]}")
+                                  data_sources.append(f"{filename}: {len(new_proxies)} unique")
+                                  print(f"✅ Added {len(new_proxies)} new unique proxies from {filename}")
                               else:
-                                  print(f"ℹ️  No new proxies from {file_info[1]} (all duplicates)")
+                                  print(f"ℹ️  No new unique proxies from {filename}")
+                          
+                          processed_count += 1
+                          
                       except Exception as e:
-                          print(f"❌ Error processing {file_info[1]}: {e}")
+                          print(f"❌ Error processing file: {e}")
+              
+              # Small delay between batches
+              if i + BATCH_SIZE < len(files_to_process):
+                  time.sleep(1)
 
           print(f"\n=== FINAL RESULTS ===")
           print(f"🎉 Total unique proxies collected: {len(all_proxies):,}")
-          print(f"📊 Data sources used: {len(data_sources)}")
+          print(f"📊 Successfully processed: {processed_count}/{len(files_to_process)} files")
+          print(f"📁 Data sources with unique proxies: {len(data_sources)}")
           
-          for i, source in enumerate(data_sources, 1):
-              print(f"  {i}. {source}")
+          if data_sources:
+              print("\n📋 Sources breakdown:")
+              for i, source in enumerate(data_sources[:20], 1):  # Show top 20
+                  print(f"  {i}. {source}")
+              if len(data_sources) > 20:
+                  print(f"  ... and {len(data_sources) - 20} more sources")
 
           if not all_proxies:
-              print("❌ No proxy data found - cannot generate map")
+              print("❌ No proxy data collected - cannot generate map")
               exit(1)
 
           # Analyze the data
           df = pd.DataFrame(all_proxies)
           
+          # Clean up latency data
+          df['latency'] = pd.to_numeric(df['latency'], errors='coerce').fillna(9999)
+          
           print(f"\n📈 ANALYSIS:")
           print(f"  🌍 Countries represented: {df['country'].nunique()}")
-          print(f"  ⚡ Average latency: {df['latency'].mean():.0f}ms")
-          print(f"  🚀 Fast proxies (<1000ms): {len(df[df['latency'] < 1000])}")
-          print(f"  🟡 Medium proxies (1000-2000ms): {len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])}")
-          print(f"  🔴 Slow proxies (>2000ms): {len(df[df['latency'] >= 2000])}")
+          print(f"  ⚡ Average latency: {df[df['latency'] < 9999]['latency'].mean():.0f}ms")
+          print(f"  🚀 Fast proxies (<1000ms): {len(df[df['latency'] < 1000]):,}")
+          print(f"  🟡 Medium proxies (1000-2000ms): {len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)]):,}")
+          print(f"  🔴 Slow proxies (>2000ms): {len(df[df['latency'] >= 2000]):,}")
           
-          # Show top countries
-          top_countries = df['country'].value_counts().head(10)
-          print(f"  🏆 Top countries:")
+          # Protocol distribution
+          protocol_dist = df['protocol'].value_counts()
+          print(f"\n  📡 Protocol distribution:")
+          for protocol, count in protocol_dist.items():
+              print(f"    {protocol}: {count:,}")
+          
+          # Top countries
+          top_countries = df['country'].value_counts().head(15)
+          print(f"\n  🏆 Top 15 countries:")
           for country, count in top_countries.items():
-              print(f"    {country}: {count}")
+              print(f"    {country}: {count:,}")
 
           # Generate the enhanced map
           print(f"\n🗺️ Generating interactive map...")
           
           # Calculate map center
-          lat_center, lon_center = df["lat"].mean(), df["lon"].mean()
+          lat_center = df["lat"].median()
+          lon_center = df["lon"].median()
 
           # Create map with better styling
           m = folium.Map(
               location=[lat_center, lon_center], 
               zoom_start=2, 
-              tiles="CartoDB dark_matter",  # Dark theme looks better
-              control_scale=True
+              tiles="CartoDB dark_matter",
+              control_scale=True,
+              prefer_canvas=True  # Better performance for many markers
           )
           
           # Add map plugins
@@ -647,45 +440,48 @@ jobs:
               control=True,
               options={
                   'maxClusterRadius': 50,
-                  'disableClusteringAtZoom': 10
+                  'disableClusteringAtZoom': 10,
+                  'spiderfyOnMaxZoom': True,
+                  'showCoverageOnHover': False
               }
           ).add_to(m)
 
-          # Add markers with enhanced styling
-          for _, row in df.iterrows():
+          # Sample markers if too many (for performance)
+          if len(df) > 10000:
+              print(f"  📌 Too many markers ({len(df):,}), sampling 10,000 for performance...")
+              df_sample = df.sample(n=10000, random_state=42)
+          else:
+              df_sample = df
+
+          # Add markers
+          for _, row in df_sample.iterrows():
               # Color coding based on latency
               if row["latency"] < 1000:
-                  color = '#00ff00'  # Bright green for fast
+                  color = '#00ff00'  # Green
                   size = 8
               elif row["latency"] < 2000:
-                  color = '#ffa500'  # Orange for medium
+                  color = '#ffa500'  # Orange
                   size = 6
               else:
-                  color = '#ff0000'  # Red for slow
+                  color = '#ff0000'  # Red
                   size = 4
               
-              # Country flag URL
+              # Country flag
               flag_url = f"https://flagcdn.com/24x18/{row['code']}.png"
               
-              # Enhanced popup with all available data
+              # Simplified popup for performance
               popup_content = f"""
-              <div style='font-family: Arial, sans-serif; font-size: 12px; width: 320px; padding: 5px;'>
-                <div style='background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px; margin: -5px -5px 10px -5px; border-radius: 4px;'>
+              <div style='font-family: Arial, sans-serif; font-size: 12px; width: 280px;'>
+                <div style='background: #667eea; color: white; padding: 8px; margin: -5px -5px 10px -5px;'>
                   <img src='{flag_url}' style='vertical-align: middle; margin-right: 8px;' onerror="this.style.display='none'"> 
-                  <strong style='font-size: 14px;'>{row['country']}</strong>
+                  <strong>{row['country']}</strong>
                 </div>
-                
-                <table style='width: 100%; font-size: 11px;'>
-                  <tr><td><strong>🌐 IP:Port</strong></td><td>{row['ip']}:{row['port']}</td></tr>
-                  <tr><td><strong>📍 Location</strong></td><td>{row['city']}, {row.get('region', 'N/A')}</td></tr>
-                  <tr><td><strong>🏢 ISP</strong></td><td>{row['isp']}</td></tr>
-                  <tr><td><strong>⚡ Latency</strong></td><td>{row['latency']} ms</td></tr>
-                  <tr><td><strong>🔒 Anonymity</strong></td><td>{row['anonymity']}</td></tr>
-                  <tr><td><strong>📡 Protocol</strong></td><td>{row['protocol'].upper()}</td></tr>
-                  <tr><td><strong>📊 Source</strong></td><td>{row['source']}</td></tr>
-                  <tr><td><strong>🕒 Last Check</strong></td><td>{row.get('last_checked', 'Unknown')}</td></tr>
-                  {f"<tr><td><strong>🏗️ Org</strong></td><td>{row.get('org', 'N/A')}</td></tr>" if row.get('org') != 'N/A' else ""}
-                  {f"<tr><td><strong>🌍 AS</strong></td><td>{row.get('as', 'N/A')}</td></tr>" if row.get('as') != 'N/A' else ""}
+                <table style='width: 100%;'>
+                  <tr><td>🌐 IP:Port</td><td>{row['ip']}:{row['port']}</td></tr>
+                  <tr><td>📍 Location</td><td>{row['city']}</td></tr>
+                  <tr><td>⚡ Latency</td><td>{row['latency']} ms</td></tr>
+                  <tr><td>📡 Protocol</td><td>{row['protocol'].upper()}</td></tr>
+                  <tr><td>📊 Source</td><td style='font-size: 10px;'>{row['source'][:30]}...</td></tr>
                 </table>
               </div>
               """
@@ -698,42 +494,76 @@ jobs:
                   fill=True,
                   fillColor=color,
                   fillOpacity=0.8,
-                  popup=folium.Popup(popup_content, max_width=350),
-                  tooltip=f"{row['ip']} | {row['country']} | {row['latency']}ms"
+                  popup=folium.Popup(popup_content, max_width=300),
+                  tooltip=f"{row['country']} | {row['latency']}ms"
               ).add_to(marker_cluster)
 
-          # Create enhanced visualizations
+          # Create visualizations
           os.makedirs("public", exist_ok=True)
           
-          # Country distribution chart
+          # Enhanced charts
           plt.style.use('dark_background')
-          fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+          fig = plt.figure(figsize=(16, 10))
           
-          # Top countries bar chart
-          top_countries = df["country"].value_counts().nlargest(12)
-          colors = plt.cm.viridis(range(len(top_countries)))
+          # Layout: 2x2 grid
+          ax1 = plt.subplot(2, 2, 1)  # Top countries
+          ax2 = plt.subplot(2, 2, 2)  # Protocol distribution
+          ax3 = plt.subplot(2, 2, 3)  # Latency distribution
+          ax4 = plt.subplot(2, 2, 4)  # Data sources
           
-          bars = ax1.barh(range(len(top_countries)), top_countries.values, color=colors)
-          ax1.set_yticks(range(len(top_countries)))
-          ax1.set_yticklabels(top_countries.index)
+          # 1. Top countries bar chart
+          top_countries_15 = df["country"].value_counts().nlargest(15)
+          colors = plt.cm.viridis(range(len(top_countries_15)))
+          
+          bars = ax1.barh(range(len(top_countries_15)), top_countries_15.values, color=colors)
+          ax1.set_yticks(range(len(top_countries_15)))
+          ax1.set_yticklabels(top_countries_15.index, fontsize=10)
           ax1.set_xlabel("Number of Proxies", fontweight='bold')
-          ax1.set_title(f"Top Countries ({len(all_proxies):,} total proxies)", fontweight='bold', pad=20)
+          ax1.set_title(f"Top 15 Countries ({len(all_proxies):,} total proxies)", fontweight='bold', pad=20)
           ax1.grid(axis='x', alpha=0.3)
           
           # Add value labels
-          for i, (country, count) in enumerate(top_countries.items()):
-              ax1.text(count + max(top_countries.values()) * 0.01, i, str(count), 
-                      va='center', ha='left', fontweight='bold')
+          for i, (country, count) in enumerate(top_countries_15.items()):
+              ax1.text(count + max(top_countries_15.values) * 0.01, i, f'{count:,}', 
+                      va='center', ha='left', fontsize=9)
           
-          # Protocol distribution pie chart
+          # 2. Protocol distribution pie chart
           protocol_counts = df['protocol'].value_counts()
-          ax2.pie(protocol_counts.values, labels=protocol_counts.index, autopct='%1.1f%%', 
-                  colors=plt.cm.Set3(range(len(protocol_counts))))
+          ax2.pie(protocol_counts.values, labels=[f"{p}\n({c:,})" for p, c in protocol_counts.items()], 
+                  autopct='%1.1f%%', colors=plt.cm.Set3(range(len(protocol_counts))),
+                  startangle=90)
           ax2.set_title("Protocol Distribution", fontweight='bold', pad=20)
+          
+          # 3. Latency distribution histogram
+          latency_data = df[df['latency'] < 9999]['latency']
+          ax3.hist(latency_data, bins=50, color='skyblue', edgecolor='white', alpha=0.7)
+          ax3.set_xlabel("Latency (ms)", fontweight='bold')
+          ax3.set_ylabel("Count", fontweight='bold')
+          ax3.set_title(f"Latency Distribution (avg: {latency_data.mean():.0f}ms)", fontweight='bold')
+          ax3.grid(axis='y', alpha=0.3)
+          ax3.axvline(1000, color='green', linestyle='--', label='Fast (<1s)')
+          ax3.axvline(2000, color='orange', linestyle='--', label='Medium (<2s)')
+          ax3.legend()
+          
+          # 4. Data sources info
+          ax4.axis('off')
+          sources_text = f"📊 Data Collection Summary\n\n"
+          sources_text += f"Total Files Processed: {processed_count}\n"
+          sources_text += f"Unique Proxies Found: {len(all_proxies):,}\n"
+          sources_text += f"Countries Covered: {df['country'].nunique()}\n\n"
+          sources_text += f"Top Data Sources:\n"
+          for i, source in enumerate(data_sources[:10], 1):
+              sources_text += f"{i}. {source}\n"
+          if len(data_sources) > 10:
+              sources_text += f"\n... and {len(data_sources) - 10} more sources"
+          
+          ax4.text(0.1, 0.9, sources_text, transform=ax4.transAxes, 
+                  fontsize=11, verticalalignment='top',
+                  bbox=dict(boxstyle='round', facecolor='#2e2e2e', alpha=0.8))
           
           plt.tight_layout()
           plt.savefig("public/analysis_charts.png", dpi=150, bbox_inches='tight', 
-                     facecolor='#2e2e2e', edgecolor='none')
+                     facecolor='#1a1a1a', edgecolor='none')
           plt.close()
 
           # Enhanced statistics panel
@@ -743,122 +573,49 @@ jobs:
           
           stats_html = f"""
           <div style="position: fixed; 
-                      top: 10px; left: 10px; width: 320px; 
-                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
+                      top: 10px; left: 10px; width: 340px; 
+                      background: linear-gradient(135deg, rgba(0,0,0,0.95) 0%, rgba(30,30,30,0.95) 100%); 
                       border: 2px solid #667eea; border-radius: 12px;
                       z-index: 9999; font-size: 13px; padding: 16px;
                       box-shadow: 0 8px 32px rgba(0,0,0,0.3);
                       color: white; font-family: 'Segoe UI', Arial, sans-serif;">
           
           <div style="text-align: center; margin-bottom: 12px;">
-            <h3 style="margin: 0; color: #667eea; font-size: 18px;">🗺️ Proxy Network Map</h3>
+            <h3 style="margin: 0; color: #667eea; font-size: 18px;">🗺️ Global Proxy Network Map</h3>
             <div style="font-size: 11px; color: #aaa; margin-top: 4px;">
-              Real-time Global Proxy Intelligence
+              Comprehensive Proxy Intelligence from {len(data_sources)} Sources
             </div>
           </div>
           
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
             <div style="background: rgba(102, 126, 234, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
-              <div style="font-size: 18px; font-weight: bold; color: #667eea;">{len(all_proxies):,}</div>
+              <div style="font-size: 20px; font-weight: bold; color: #667eea;">{len(all_proxies):,}</div>
               <div style="font-size: 10px; color: #ccc;">Total Proxies</div>
             </div>
             <div style="background: rgba(118, 75, 162, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
-              <div style="font-size: 18px; font-weight: bold; color: #764ba2;">{df['country'].nunique()}</div>
+              <div style="font-size: 20px; font-weight: bold; color: #764ba2;">{df['country'].nunique()}</div>
               <div style="font-size: 10px; color: #ccc;">Countries</div>
             </div>
           </div>
           
-          <div style="margin-bottom: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px;">⚡ Avg Latency:</span>
-              <span style="font-weight: bold; color: #ffa500;">{df['latency'].mean():.0f}ms</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px;">📊 Data Sources:</span>
-              <span style="font-weight: bold; color: #64ffda;">{len(data_sources)}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 12px;">🕒 Last Update:</span>
-              <span style="font-weight: bold; color: #ff6b6b;">{datetime.now().strftime('%H:%M UTC')}</span>
-            </div>
-          </div>
-          
-          <div style="background: rgba(255,255,255,0.1); padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+          <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 6px; margin-bottom: 12px;">
             <div style="font-size: 11px; color: #ccc; margin-bottom: 6px; text-align: center;">Performance Distribution</div>
             <div style="display: flex; justify-content: space-between; font-size: 11px;">
-              <div style="text-align: center;">
-                <div style="color: #00ff00; font-weight: bold;">{fast_count}</div>
-                <div style="color: #aaa;">Fast</div>
+              <div style="text-align: center; flex: 1;">
+                <div style="color: #00ff00; font-weight: bold; font-size: 16px;">{fast_count:,}</div>
+                <div style="color: #aaa; font-size: 9px;">Fast<br/>&lt;1s</div>
               </div>
-              <div style="text-align: center;">
-                <div style="color: #ffa500; font-weight: bold;">{medium_count}</div>
-                <div style="color: #aaa;">Medium</div>
+              <div style="text-align: center; flex: 1;">
+                <div style="color: #ffa500; font-weight: bold; font-size: 16px;">{medium_count:,}</div>
+                <div style="color: #aaa; font-size: 9px;">Medium<br/>1-2s</div>
               </div>
-              <div style="text-align: center;">
-                <div style="color: #ff0000; font-weight: bold;">{slow_count}</div>
-                <div style="color: #aaa;">Slow</div>
+              <div style="text-align: center; flex: 1;">
+                <div style="color: #ff0000; font-weight: bold; font-size: 16px;">{slow_count:,}</div>
+                <div style="color: #aaa; font-size: 9px;">Slow<br/>&gt;2s</div>
               </div>
             </div>
           </div>
           
-          <div style="font-size: 10px; color: #999; max-height: 80px; overflow-y: auto;">
-            <strong style="color: #667eea;">Data Sources:</strong><br>
-            {'<br>'.join([f"• {source}" for source in data_sources[:8]])}
-            {f'<br>• ...and {len(data_sources)-8} more sources' if len(data_sources) > 8 else ''}
-          </div>
-          </div>
-          """
-          
-          # Enhanced legend
-          legend_html = """
-          <div style="position: fixed; 
-                      top: 10px; right: 10px; width: 180px; 
-                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
-                      border: 2px solid #764ba2; border-radius: 12px;
-                      z-index: 9999; font-size: 13px; padding: 16px;
-                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
-          
-          <h4 style="margin: 0 0 12px 0; color: #764ba2; text-align: center;">🚦 Latency Legend</h4>
-          
-          <div style="margin-bottom: 8px;">
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 16px; height: 16px; background: #00ff00; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">< 1000ms (Excellent)</span>
-            </div>
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 14px; height: 14px; background: #ffa500; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">1000-2000ms (Good)</span>
-            </div>
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 12px; height: 12px; background: #ff0000; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">> 2000ms (Slow)</span>
-            </div>
-          </div>
-          
-          <div style="border-top: 1px solid #444; padding-top: 8px; font-size: 11px; color: #bbb; text-align: center;">
-            💡 Click markers for details<br>
-            🔍 Zoom to explore regions<br>
-            📊 Clusters show proxy density
-          </div>
-          </div>
-          """
-          
-          # Add the charts as floating image
-          FloatImage("public/analysis_charts.png", bottom=20, right=20).add_to(m)
-          
-          # Add the info panels
-          m.get_root().html.add_child(folium.Element(stats_html))
-          m.get_root().html.add_child(folium.Element(legend_html))
-          
-          # Save the map
-          m.save("public/index.html")
-          
-          print(f"\n🎉 SUCCESS!")
-          print(f"✅ Generated interactive map with {len(all_proxies):,} proxies")
-          print(f"🌍 Covering {df['country'].nunique()} countries")
-          print(f"📈 That's {len(all_proxies) - 15:,} more proxies than the 15-proxy limit!")
-          print(f"🗺️ Map saved to: public/index.html")
-          print(f"📊 Charts saved to: public/analysis_charts.png")
-          
-          EOF
+          <div style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-size: 12px;">⚡ Avg Lat
