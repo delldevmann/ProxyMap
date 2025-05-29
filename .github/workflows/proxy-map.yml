@@ -36,7 +36,7 @@ jobs:
         run: |
           python3 << 'EOF'
           import requests, folium, pandas as pd, matplotlib.pyplot as plt
-          from folium.plugins import Fullscreen, MiniMap, FloatImage, MarkerCluster
+          from folium.plugins import Fullscreen, MiniMap, MarkerCluster, MousePosition
           import os, re, json
           from datetime import datetime
           import time
@@ -420,31 +420,189 @@ jobs:
           lat_center = df["lat"].median()
           lon_center = df["lon"].median()
 
-          # Create map with better styling
+          # Create map with cleaner defaults
           m = folium.Map(
               location=[lat_center, lon_center], 
               zoom_start=2, 
               tiles="CartoDB dark_matter",
               control_scale=True,
-              prefer_canvas=True  # Better performance for many markers
+              prefer_canvas=True,
+              zoom_control=False,  # Remove default zoom control
+              attribution_control=False  # Remove attribution for cleaner look
           )
           
-          # Add map plugins
-          Fullscreen().add_to(m)
-          MiniMap(toggle_display=True, position='bottomright').add_to(m)
+          # Add custom zoom control in a better position
+          from folium.plugins import Fullscreen, MiniMap, MarkerCluster, MousePosition
           
-          # Use marker clustering for performance
+          # Add fullscreen button (top right)
+          Fullscreen(
+              position='topright',
+              title='Fullscreen',
+              title_cancel='Exit Fullscreen',
+              force_separate_button=True
+          ).add_to(m)
+          
+          # Add cleaner mini map
+          minimap = MiniMap(
+              toggle_display=True,
+              tile_layer="CartoDB dark_matter",
+              position='bottomright',
+              width=150,
+              height=150,
+              collapsed_width=25,
+              collapsed_height=25,
+              zoom_level_offset=-5,
+              minimized=True
+          ).add_to(m)
+          
+          # Add mouse position coordinate display
+          MousePosition(
+              position='bottomright',
+              separator=' | ',
+              empty_string='',
+              lng_first=False,
+              num_digits=3,
+              prefix='',
+              lat_formatter="function(lat){return 'Lat: ' + lat.toFixed(3)}",
+              lng_formatter="function(lng){return 'Lng: ' + lng.toFixed(3)}"
+          ).add_to(m)
+          
+          # Use marker clustering with cleaner options
           marker_cluster = MarkerCluster(
               name="Proxy Locations",
               overlay=True,
-              control=True,
+              control=False,  # Don't show in layer control
               options={
-                  'maxClusterRadius': 50,
-                  'disableClusteringAtZoom': 10,
+                  'maxClusterRadius': 60,
+                  'disableClusteringAtZoom': 8,
                   'spiderfyOnMaxZoom': True,
-                  'showCoverageOnHover': False
+                  'showCoverageOnHover': False,
+                  'zoomToBoundsOnClick': True,
+                  'singleMarkerMode': False,
+                  'spiderLegPolylineOptions': {'weight': 1.5, 'color': '#fff', 'opacity': 0.5},
+                  'iconCreateFunction': """
+                      function(cluster) {
+                          var childCount = cluster.getChildCount();
+                          var c = ' marker-cluster-';
+                          if (childCount < 10) {
+                              c += 'small';
+                          } else if (childCount < 100) {
+                              c += 'medium';
+                          } else {
+                              c += 'large';
+                          }
+                          return new L.DivIcon({
+                              html: '<div><span>' + childCount + '</span></div>',
+                              className: 'marker-cluster' + c,
+                              iconSize: new L.Point(40, 40)
+                          });
+                      }
+                  """
               }
           ).add_to(m)
+          
+          # Add custom CSS for cleaner cluster styling
+          cluster_css = """
+          <style>
+          .marker-cluster {
+              background-clip: padding-box;
+              border-radius: 20px;
+          }
+          .marker-cluster div {
+              width: 30px;
+              height: 30px;
+              margin-left: 5px;
+              margin-top: 5px;
+              text-align: center;
+              border-radius: 15px;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+              font-weight: 600;
+              font-size: 12px;
+              line-height: 30px;
+          }
+          .marker-cluster-small {
+              background-color: rgba(0, 255, 136, 0.3);
+          }
+          .marker-cluster-small div {
+              background-color: rgba(0, 255, 136, 0.8);
+              color: #000;
+          }
+          .marker-cluster-medium {
+              background-color: rgba(255, 165, 0, 0.3);
+          }
+          .marker-cluster-medium div {
+              background-color: rgba(255, 165, 0, 0.8);
+              color: #000;
+          }
+          .marker-cluster-large {
+              background-color: rgba(255, 68, 68, 0.3);
+          }
+          .marker-cluster-large div {
+              background-color: rgba(255, 68, 68, 0.8);
+              color: #fff;
+          }
+          
+          /* Hide Leaflet attribution */
+          .leaflet-control-attribution {
+              display: none;
+          }
+          
+          /* Custom zoom control styling */
+          .leaflet-control-zoom {
+              border: 1px solid rgba(255, 255, 255, 0.1) !important;
+              background: rgba(15, 15, 15, 0.85) !important;
+              backdrop-filter: blur(10px);
+              border-radius: 6px !important;
+              box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+          }
+          .leaflet-control-zoom a {
+              background-color: transparent !important;
+              color: rgba(255, 255, 255, 0.8) !important;
+              border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+          }
+          .leaflet-control-zoom a:hover {
+              background-color: rgba(255, 255, 255, 0.1) !important;
+              color: white !important;
+          }
+          .leaflet-control-zoom a:last-child {
+              border-bottom: none !important;
+          }
+          
+          /* Fullscreen button styling */
+          .leaflet-control-fullscreen a {
+              background: rgba(15, 15, 15, 0.85) !important;
+              backdrop-filter: blur(10px);
+              border: 1px solid rgba(255, 255, 255, 0.1) !important;
+              border-radius: 6px !important;
+              box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+          }
+          
+          /* Mouse position styling */
+          .leaflet-control-mouseposition {
+              background: rgba(15, 15, 15, 0.85) !important;
+              backdrop-filter: blur(10px);
+              color: rgba(255, 255, 255, 0.6) !important;
+              padding: 4px 8px !important;
+              font-size: 11px !important;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+              border: 1px solid rgba(255, 255, 255, 0.1) !important;
+              border-radius: 4px !important;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+          }
+          
+          /* Minimap styling */
+          .leaflet-control-minimap {
+              border: 1px solid rgba(255, 255, 255, 0.1) !important;
+              box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+              border-radius: 6px !important;
+              overflow: hidden;
+          }
+          .leaflet-control-minimap-toggle-display {
+              background-color: rgba(15, 15, 15, 0.85) !important;
+              border-radius: 4px !important;
+          }
+          </style>
+          """
 
           # Sample markers if too many (for performance)
           if len(df) > 10000:
@@ -469,20 +627,37 @@ jobs:
               # Country flag
               flag_url = f"https://flagcdn.com/24x18/{row['code']}.png"
               
-              # Simplified popup for performance
+              # Cleaner popup without emojis in table
               popup_content = f"""
-              <div style='font-family: Arial, sans-serif; font-size: 12px; width: 280px;'>
-                <div style='background: #667eea; color: white; padding: 8px; margin: -5px -5px 10px -5px;'>
-                  <img src='{flag_url}' style='vertical-align: middle; margin-right: 8px;' onerror="this.style.display='none'"> 
-                  <strong>{row['country']}</strong>
+              <div style='font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; font-size: 12px; width: 260px;'>
+                <div style='background: #1a1a1a; color: white; padding: 10px; margin: -8px -8px 10px -8px; border-radius: 4px 4px 0 0;'>
+                  <img src='{flag_url}' style='vertical-align: middle; margin-right: 8px; width: 20px;' onerror="this.style.display='none'"> 
+                  <strong style='font-size: 14px;'>{row['country']}</strong>
                 </div>
-                <table style='width: 100%;'>
-                  <tr><td>🌐 IP:Port</td><td>{row['ip']}:{row['port']}</td></tr>
-                  <tr><td>📍 Location</td><td>{row['city']}</td></tr>
-                  <tr><td>⚡ Latency</td><td>{row['latency']} ms</td></tr>
-                  <tr><td>📡 Protocol</td><td>{row['protocol'].upper()}</td></tr>
-                  <tr><td>📊 Source</td><td style='font-size: 10px;'>{row['source'][:30]}...</td></tr>
-                </table>
+                <div style='padding: 0 8px 8px 8px;'>
+                  <div style='margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #eee;'>
+                    <div style='color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;'>Address</div>
+                    <div style='font-family: monospace; font-size: 12px;'>{row['ip']}:{row['port']}</div>
+                  </div>
+                  <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 12px;'>
+                    <div>
+                      <div style='color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;'>Location</div>
+                      <div style='font-size: 11px;'>{row['city']}</div>
+                    </div>
+                    <div>
+                      <div style='color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;'>Protocol</div>
+                      <div style='font-size: 11px;'>{row['protocol'].upper()}</div>
+                    </div>
+                    <div>
+                      <div style='color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;'>Latency</div>
+                      <div style='font-size: 11px; font-weight: 600; color: {"#00c851" if row["latency"] < 1000 else "#ffbb33" if row["latency"] < 2000 else "#ff4444"}'>{row['latency']}ms</div>
+                    </div>
+                    <div>
+                      <div style='color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;'>ISP</div>
+                      <div style='font-size: 11px;'>{row['isp'][:20]}...</div>
+                    </div>
+                  </div>
+                </div>
               </div>
               """
               
@@ -501,69 +676,91 @@ jobs:
           # Create visualizations
           os.makedirs("public", exist_ok=True)
           
-          # Enhanced charts
+          # Enhanced charts with cleaner style
           plt.style.use('dark_background')
-          fig = plt.figure(figsize=(16, 10))
+          fig = plt.figure(figsize=(14, 8))
+          fig.patch.set_facecolor('#0a0a0a')
           
-          # Layout: 2x2 grid
-          ax1 = plt.subplot(2, 2, 1)  # Top countries
-          ax2 = plt.subplot(2, 2, 2)  # Protocol distribution
-          ax3 = plt.subplot(2, 2, 3)  # Latency distribution
-          ax4 = plt.subplot(2, 2, 4)  # Data sources
+          # Layout: 2x2 grid with adjusted spacing
+          gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+          ax1 = fig.add_subplot(gs[0, 0])  # Top countries
+          ax2 = fig.add_subplot(gs[0, 1])  # Protocol distribution
+          ax3 = fig.add_subplot(gs[1, :])  # Latency distribution (full width)
           
-          # 1. Top countries bar chart
-          top_countries_15 = df["country"].value_counts().nlargest(15)
-          colors = plt.cm.viridis(range(len(top_countries_15)))
+          # 1. Top countries bar chart - horizontal bars
+          top_countries_10 = df["country"].value_counts().nlargest(10)
+          y_pos = range(len(top_countries_10))
           
-          bars = ax1.barh(range(len(top_countries_15)), top_countries_15.values, color=colors)
-          ax1.set_yticks(range(len(top_countries_15)))
-          ax1.set_yticklabels(top_countries_15.index, fontsize=10)
-          ax1.set_xlabel("Number of Proxies", fontweight='bold')
-          ax1.set_title(f"Top 15 Countries ({len(all_proxies):,} total proxies)", fontweight='bold', pad=20)
-          ax1.grid(axis='x', alpha=0.3)
+          bars = ax1.barh(y_pos, top_countries_10.values, color='#00ff88', alpha=0.8)
+          ax1.set_yticks(y_pos)
+          ax1.set_yticklabels(top_countries_10.index, fontsize=10)
+          ax1.set_xlabel("Number of Proxies", fontsize=10, alpha=0.7)
+          ax1.set_title(f"Top 10 Countries", fontsize=12, pad=15)
+          ax1.grid(axis='x', alpha=0.2, linestyle='--')
+          ax1.spines['top'].set_visible(False)
+          ax1.spines['right'].set_visible(False)
+          ax1.spines['left'].set_visible(False)
           
           # Add value labels
-          for i, (country, count) in enumerate(top_countries_15.items()):
-              ax1.text(count + max(top_countries_15.values) * 0.01, i, f'{count:,}', 
-                      va='center', ha='left', fontsize=9)
+          for i, (country, count) in enumerate(top_countries_10.items()):
+              ax1.text(count + max(top_countries_10.values) * 0.01, i, f' {count:,}', 
+                      va='center', ha='left', fontsize=9, alpha=0.7)
           
-          # 2. Protocol distribution pie chart
+          # 2. Protocol distribution - donut chart
           protocol_counts = df['protocol'].value_counts()
-          ax2.pie(protocol_counts.values, labels=[f"{p}\n({c:,})" for p, c in protocol_counts.items()], 
-                  autopct='%1.1f%%', colors=plt.cm.Set3(range(len(protocol_counts))),
-                  startangle=90)
-          ax2.set_title("Protocol Distribution", fontweight='bold', pad=20)
+          colors = ['#00ff88', '#00ccff', '#ff6b6b', '#ffd93d', '#a8e6cf']
           
-          # 3. Latency distribution histogram
-          latency_data = df[df['latency'] < 9999]['latency']
-          ax3.hist(latency_data, bins=50, color='skyblue', edgecolor='white', alpha=0.7)
-          ax3.set_xlabel("Latency (ms)", fontweight='bold')
-          ax3.set_ylabel("Count", fontweight='bold')
-          ax3.set_title(f"Latency Distribution (avg: {latency_data.mean():.0f}ms)", fontweight='bold')
-          ax3.grid(axis='y', alpha=0.3)
-          ax3.axvline(1000, color='green', linestyle='--', label='Fast (<1s)')
-          ax3.axvline(2000, color='orange', linestyle='--', label='Medium (<2s)')
-          ax3.legend()
+          wedges, texts, autotexts = ax2.pie(protocol_counts.values, 
+                                             labels=protocol_counts.index,
+                                             autopct='%1.0f%%',
+                                             colors=colors[:len(protocol_counts)],
+                                             startangle=90,
+                                             wedgeprops=dict(width=0.5, edgecolor='#0a0a0a'))
           
-          # 4. Data sources info
-          ax4.axis('off')
-          sources_text = f"📊 Data Collection Summary\n\n"
-          sources_text += f"Total Files Processed: {processed_count}\n"
-          sources_text += f"Unique Proxies Found: {len(all_proxies):,}\n"
-          sources_text += f"Countries Covered: {df['country'].nunique()}\n\n"
-          sources_text += f"Top Data Sources:\n"
-          for i, source in enumerate(data_sources[:10], 1):
-              sources_text += f"{i}. {source}\n"
-          if len(data_sources) > 10:
-              sources_text += f"\n... and {len(data_sources) - 10} more sources"
+          ax2.set_title("Protocol Distribution", fontsize=12, pad=15)
           
-          ax4.text(0.1, 0.9, sources_text, transform=ax4.transAxes, 
-                  fontsize=11, verticalalignment='top',
-                  bbox=dict(boxstyle='round', facecolor='#2e2e2e', alpha=0.8))
+          # Style the text
+          for text in texts:
+              text.set_fontsize(10)
+              text.set_alpha(0.8)
+          for autotext in autotexts:
+              autotext.set_color('white')
+              autotext.set_fontsize(9)
+              autotext.set_weight('bold')
+          
+          # 3. Latency distribution - modern histogram
+          latency_data = df[df['latency'] < 5000]['latency']  # Cap at 5000ms for better visualization
+          
+          n, bins, patches = ax3.hist(latency_data, bins=50, color='#00ff88', alpha=0.7, edgecolor='none')
+          
+          # Color code the bars
+          for i, patch in enumerate(patches):
+              if bins[i] < 1000:
+                  patch.set_facecolor('#00ff88')
+              elif bins[i] < 2000:
+                  patch.set_facecolor('#ffa500')
+              else:
+                  patch.set_facecolor('#ff4444')
+          
+          ax3.set_xlabel("Latency (ms)", fontsize=10, alpha=0.7)
+          ax3.set_ylabel("Count", fontsize=10, alpha=0.7)
+          ax3.set_title(f"Latency Distribution (Average: {latency_data.mean():.0f}ms)", fontsize=12, pad=15)
+          ax3.grid(axis='y', alpha=0.2, linestyle='--')
+          ax3.spines['top'].set_visible(False)
+          ax3.spines['right'].set_visible(False)
+          
+          # Add vertical lines for reference
+          ax3.axvline(1000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+          ax3.axvline(2000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+          
+          # Add text labels
+          ax3.text(500, ax3.get_ylim()[1] * 0.9, 'Fast', ha='center', fontsize=10, alpha=0.5)
+          ax3.text(1500, ax3.get_ylim()[1] * 0.9, 'Medium', ha='center', fontsize=10, alpha=0.5)
+          ax3.text(3000, ax3.get_ylim()[1] * 0.9, 'Slow', ha='center', fontsize=10, alpha=0.5)
           
           plt.tight_layout()
-          plt.savefig("public/analysis_charts.png", dpi=150, bbox_inches='tight', 
-                     facecolor='#1a1a1a', edgecolor='none')
+          plt.savefig("public/analysis_charts.png", dpi=120, bbox_inches='tight', 
+                     facecolor='#0a0a0a', edgecolor='none')
           plt.close()
 
           # Enhanced statistics panel
@@ -571,113 +768,150 @@ jobs:
           medium_count = len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])
           slow_count = len(df[df['latency'] >= 2000])
           
-          # Create statistics HTML panel
+          # Create cleaner statistics HTML panel
           stats_html = f'''
           <div style="position: fixed; 
-                      top: 10px; left: 10px; width: 340px; 
-                      background: linear-gradient(135deg, rgba(0,0,0,0.95) 0%, rgba(30,30,30,0.95) 100%); 
-                      border: 2px solid #667eea; border-radius: 12px;
-                      z-index: 9999; font-size: 13px; padding: 16px;
-                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
+                      top: 20px; left: 20px; width: 280px; 
+                      background: rgba(15, 15, 15, 0.85); 
+                      backdrop-filter: blur(10px);
+                      border: 1px solid rgba(255, 255, 255, 0.1);
+                      border-radius: 8px;
+                      z-index: 1000; font-size: 12px; padding: 20px;
+                      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+                      color: white; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">
           
-          <div style="text-align: center; margin-bottom: 12px;">
-            <h3 style="margin: 0; color: #667eea; font-size: 18px;">🗺️ Global Proxy Network Map</h3>
-            <div style="font-size: 11px; color: #aaa; margin-top: 4px;">
-              Comprehensive Proxy Intelligence from {len(data_sources)} Sources
+          <div style="margin-bottom: 20px;">
+            <h3 style="margin: 0; font-size: 16px; font-weight: 600;">Global Proxy Network</h3>
+            <div style="font-size: 11px; color: #888; margin-top: 2px;">
+              Live data from {len(data_sources)} sources
             </div>
           </div>
           
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-            <div style="background: rgba(102, 126, 234, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
-              <div style="font-size: 20px; font-weight: bold; color: #667eea;">{len(all_proxies):,}</div>
-              <div style="font-size: 10px; color: #ccc;">Total Proxies</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+            <div style="background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 6px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 600;">{len(all_proxies):,}</div>
+              <div style="font-size: 11px; color: #888; margin-top: 2px;">Total Proxies</div>
             </div>
-            <div style="background: rgba(118, 75, 162, 0.2); padding: 8px; border-radius: 6px; text-align: center;">
-              <div style="font-size: 20px; font-weight: bold; color: #764ba2;">{df['country'].nunique()}</div>
-              <div style="font-size: 10px; color: #ccc;">Countries</div>
+            <div style="background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 6px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 600;">{df['country'].nunique()}</div>
+              <div style="font-size: 11px; color: #888; margin-top: 2px;">Countries</div>
             </div>
           </div>
           
-          <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 6px; margin-bottom: 12px;">
-            <div style="font-size: 11px; color: #ccc; margin-bottom: 6px; text-align: center;">Performance Distribution</div>
-            <div style="display: flex; justify-content: space-between; font-size: 11px;">
-              <div style="text-align: center; flex: 1;">
-                <div style="color: #00ff00; font-weight: bold; font-size: 16px;">{fast_count:,}</div>
-                <div style="color: #aaa; font-size: 9px;">Fast<br/>&lt;1s</div>
+          <div style="margin-bottom: 16px;">
+            <div style="font-size: 11px; color: #888; margin-bottom: 8px;">PERFORMANCE</div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+              <div style="display: flex; align-items: center;">
+                <div style="width: 8px; height: 8px; background: #00ff00; border-radius: 50%; margin-right: 8px;"></div>
+                <span style="font-size: 11px;">Fast (&lt;1s)</span>
               </div>
-              <div style="text-align: center; flex: 1;">
-                <div style="color: #ffa500; font-weight: bold; font-size: 16px;">{medium_count:,}</div>
-                <div style="color: #aaa; font-size: 9px;">Medium<br/>1-2s</div>
+              <span style="font-size: 11px; font-weight: 600;">{fast_count:,}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+              <div style="display: flex; align-items: center;">
+                <div style="width: 8px; height: 8px; background: #ffa500; border-radius: 50%; margin-right: 8px;"></div>
+                <span style="font-size: 11px;">Medium (1-2s)</span>
               </div>
-              <div style="text-align: center; flex: 1;">
-                <div style="color: #ff0000; font-weight: bold; font-size: 16px;">{slow_count:,}</div>
-                <div style="color: #aaa; font-size: 9px;">Slow<br/>&gt;2s</div>
+              <span style="font-size: 11px; font-weight: 600;">{medium_count:,}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <div style="display: flex; align-items: center;">
+                <div style="width: 8px; height: 8px; background: #ff0000; border-radius: 50%; margin-right: 8px;"></div>
+                <span style="font-size: 11px;">Slow (&gt;2s)</span>
               </div>
+              <span style="font-size: 11px; font-weight: 600;">{slow_count:,}</span>
             </div>
           </div>
           
-          <div style="margin-bottom: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px;">⚡ Avg Latency:</span>
-              <span style="font-weight: bold; color: #ffa500;">{df[df['latency'] < 9999]['latency'].mean():.0f}ms</span>
+          <div style="padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+              <span style="font-size: 11px; color: #888;">Average Latency</span>
+              <span style="font-size: 11px; font-weight: 600;">{df[df['latency'] < 9999]['latency'].mean():.0f}ms</span>
             </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px;">📊 Data Sources:</span>
-              <span style="font-weight: bold; color: #64ffda;">{len(data_sources)}</span>
+            <div style="display: flex; justify-content: space-between;">
+              <span style="font-size: 11px; color: #888;">Last Updated</span>
+              <span style="font-size: 11px; font-weight: 600;">{datetime.now().strftime('%H:%M UTC')}</span>
             </div>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-size: 12px;">🕒 Last Update:</span>
-              <span style="font-weight: bold; color: #ff6b6b;">{datetime.now().strftime('%H:%M UTC')}</span>
-            </div>
-          </div>
-          
-          <div style="font-size: 10px; color: #999; text-align: center; padding-top: 8px; border-top: 1px solid #444;">
-            💡 Click markers for details • 🔍 Zoom to explore
           </div>
           </div>
           '''
           
-          # Enhanced legend
+          # Minimal legend - removed or simplified
           legend_html = '''
           <div style="position: fixed; 
-                      top: 10px; right: 10px; width: 180px; 
-                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
-                      border: 2px solid #764ba2; border-radius: 12px;
-                      z-index: 9999; font-size: 13px; padding: 16px;
-                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
+                      bottom: 20px; left: 20px;
+                      background: rgba(15, 15, 15, 0.85); 
+                      backdrop-filter: blur(10px);
+                      border: 1px solid rgba(255, 255, 255, 0.1);
+                      border-radius: 6px;
+                      z-index: 1000; font-size: 11px; padding: 12px;
+                      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+                      color: white; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">
           
-          <h4 style="margin: 0 0 12px 0; color: #764ba2; text-align: center;">🚦 Latency Legend</h4>
-          
-          <div style="margin-bottom: 8px;">
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 16px; height: 16px; background: #00ff00; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">< 1000ms (Fast)</span>
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <div style="display: flex; align-items: center;">
+              <div style="width: 8px; height: 8px; background: #00ff00; border-radius: 50%; margin-right: 6px;"></div>
+              <span>&lt;1s</span>
             </div>
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 14px; height: 14px; background: #ffa500; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">1-2s (Medium)</span>
+            <div style="display: flex; align-items: center;">
+              <div style="width: 8px; height: 8px; background: #ffa500; border-radius: 50%; margin-right: 6px;"></div>
+              <span>1-2s</span>
             </div>
-            <div style="display: flex; align-items: center; margin: 6px 0;">
-              <div style="width: 12px; height: 12px; background: #ff0000; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
-              <span style="font-weight: 500;">> 2s (Slow)</span>
+            <div style="display: flex; align-items: center;">
+              <div style="width: 8px; height: 8px; background: #ff0000; border-radius: 50%; margin-right: 6px;"></div>
+              <span>&gt;2s</span>
             </div>
-          </div>
-          
-          <div style="border-top: 1px solid #444; padding-top: 8px; font-size: 11px; color: #bbb; text-align: center;">
-            📊 Clusters = High density<br>
-            🗺️ {len(df_sample):,} markers shown
           </div>
           </div>
           '''
           
-          # Add the charts as floating image
-          FloatImage("analysis_charts.png", bottom=20, right=20).add_to(m)
+          # Don't add the charts as floating image - keep map clean
+          # FloatImage("analysis_charts.png", bottom=20, right=20).add_to(m)
           
-          # Add the info panels
+          # Add all custom styling and panels
+          m.get_root().html.add_child(folium.Element(cluster_css))
           m.get_root().html.add_child(folium.Element(stats_html))
           m.get_root().html.add_child(folium.Element(legend_html))
+          
+          # Add custom zoom controls with better positioning
+          zoom_control_html = '''
+          <div style="position: fixed; top: 80px; right: 20px; z-index: 1000;">
+              <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <button onclick="map.zoomIn()" style="
+                      width: 32px; height: 32px;
+                      background: rgba(15, 15, 15, 0.85);
+                      backdrop-filter: blur(10px);
+                      border: 1px solid rgba(255, 255, 255, 0.1);
+                      border-radius: 6px 6px 0 0;
+                      color: rgba(255, 255, 255, 0.8);
+                      font-size: 18px;
+                      cursor: pointer;
+                      transition: all 0.2s;
+                      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                  " onmouseover="this.style.background='rgba(255, 255, 255, 0.1)'" 
+                     onmouseout="this.style.background='rgba(15, 15, 15, 0.85)'">+</button>
+                  <button onclick="map.zoomOut()" style="
+                      width: 32px; height: 32px;
+                      background: rgba(15, 15, 15, 0.85);
+                      backdrop-filter: blur(10px);
+                      border: 1px solid rgba(255, 255, 255, 0.1);
+                      border-radius: 0 0 6px 6px;
+                      color: rgba(255, 255, 255, 0.8);
+                      font-size: 18px;
+                      cursor: pointer;
+                      transition: all 0.2s;
+                      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                      border-top: none;
+                  " onmouseover="this.style.background='rgba(255, 255, 255, 0.1)'" 
+                     onmouseout="this.style.background='rgba(15, 15, 15, 0.85)'">−</button>
+              </div>
+          </div>
+          <script>
+              // Get the map instance
+              var map = window[Object.keys(window).find(key => key.startsWith('map_'))];
+          </script>
+          '''
+          m.get_root().html.add_child(folium.Element(zoom_control_html))
           
           # Save the map
           m.save("public/index.html")
