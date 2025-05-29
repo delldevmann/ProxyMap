@@ -523,4 +523,518 @@ y_pos = range(len(top_countries_10))
 
 bars = ax1.barh(y_pos, top_countries_10.values, color='#00ff88', alpha=0.8)
 ax1.set_yticks(y_pos)
-ax1.set_yticklabels(top_countries_10.inde
+ax1.set_yticklabels(top_countries_10.index, fontsize=10)
+ax1.set_xlabel('Number of Proxies', fontsize=10, alpha=0.7)
+ax1.set_title(f'Top 10 Countries', fontsize=12, pad=15)
+ax1.grid(axis='x', alpha=0.2, linestyle='--')
+ax1.spines['top'].set_visible(False)
+ax1.spines['right'].set_visible(False)
+ax1.spines['left'].set_visible(False)
+
+# Add value labels
+for i, (country, count) in enumerate(top_countries_10.items()):
+    ax1.text(count + max(top_countries_10.values) * 0.01, i, f' {count:,}', 
+            va='center', ha='left', fontsize=9, alpha=0.7)
+
+# 2. Protocol distribution - donut chart
+protocol_counts = df['protocol'].value_counts()
+colors = ['#00ff88', '#00ccff', '#ff6b6b', '#ffd93d', '#a8e6cf']
+
+wedges, texts, autotexts = ax2.pie(protocol_counts.values, 
+                                   labels=protocol_counts.index,
+                                   autopct='%1.0f%%',
+                                   colors=colors[:len(protocol_counts)],
+                                   startangle=90,
+                                   wedgeprops=dict(width=0.5, edgecolor='#0a0a0a'))
+
+ax2.set_title('Protocol Distribution', fontsize=12, pad=15)
+
+# Style the text
+for text in texts:
+    text.set_fontsize(10)
+    text.set_alpha(0.8)
+for autotext in autotexts:
+    autotext.set_color('white')
+    autotext.set_fontsize(9)
+    autotext.set_weight('bold')
+
+# 3. Latency distribution - modern histogram
+latency_data = df[df['latency'] < 5000]['latency']  # Cap at 5000ms for better visualization
+
+n, bins, patches = ax3.hist(latency_data, bins=50, color='#00ff88', alpha=0.7, edgecolor='none')
+
+# Color code the bars
+for i, patch in enumerate(patches):
+    if bins[i] < 1000:
+        patch.set_facecolor('#00ff88')
+    elif bins[i] < 2000:
+        patch.set_facecolor('#ffa500')
+    else:
+        patch.set_facecolor('#ff4444')
+
+ax3.set_xlabel('Latency (ms)', fontsize=10, alpha=0.7)
+ax3.set_ylabel('Count', fontsize=10, alpha=0.7)
+ax3.set_title(f'Latency Distribution (Average: {latency_data.mean():.0f}ms)', fontsize=12, pad=15)
+ax3.grid(axis='y', alpha=0.2, linestyle='--')
+ax3.spines['top'].set_visible(False)
+ax3.spines['right'].set_visible(False)
+
+# Add vertical lines for reference
+ax3.axvline(1000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+ax3.axvline(2000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+
+# Add text labels
+ax3.text(500, ax3.get_ylim()[1] * 0.9, 'Fast', ha='center', fontsize=10, alpha=0.5)
+ax3.text(1500, ax3.get_ylim()[1] * 0.9, 'Medium', ha='center', fontsize=10, alpha=0.5)
+ax3.text(3000, ax3.get_ylim()[1] * 0.9, 'Slow', ha='center', fontsize=10, alpha=0.5)
+
+plt.tight_layout()
+
+# Save the chart to a BytesIO object
+chart_buffer = BytesIO()
+plt.savefig(chart_buffer, format='png', dpi=120, bbox_inches='tight', 
+           facecolor='#0a0a0a', edgecolor='none')
+chart_buffer.seek(0)
+plt.close()
+
+# Convert to base64 for embedding
+chart_base64 = base64.b64encode(chart_buffer.read()).decode('utf-8')
+
+# Also save to file for GitHub Pages
+plt.style.use('dark_background')
+fig = plt.figure(figsize=(14, 8))
+fig.patch.set_facecolor('#0a0a0a')
+
+# Recreate the same charts (since we closed the figure)
+gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+ax1 = fig.add_subplot(gs[0, 0])
+ax2 = fig.add_subplot(gs[0, 1])
+ax3 = fig.add_subplot(gs[1, :])
+
+# Recreate chart 1
+bars = ax1.barh(y_pos, top_countries_10.values, color='#00ff88', alpha=0.8)
+ax1.set_yticks(y_pos)
+ax1.set_yticklabels(top_countries_10.index, fontsize=10)
+ax1.set_xlabel('Number of Proxies', fontsize=10, alpha=0.7)
+ax1.set_title(f'Top 10 Countries', fontsize=12, pad=15)
+ax1.grid(axis='x', alpha=0.2, linestyle='--')
+ax1.spines['top'].set_visible(False)
+ax1.spines['right'].set_visible(False)
+ax1.spines['left'].set_visible(False)
+for i, (country, count) in enumerate(top_countries_10.items()):
+    ax1.text(count + max(top_countries_10.values) * 0.01, i, f' {count:,}', 
+            va='center', ha='left', fontsize=9, alpha=0.7)
+
+# Recreate chart 2
+wedges, texts, autotexts = ax2.pie(protocol_counts.values, 
+                                   labels=protocol_counts.index,
+                                   autopct='%1.0f%%',
+                                   colors=colors[:len(protocol_counts)],
+                                   startangle=90,
+                                   wedgeprops=dict(width=0.5, edgecolor='#0a0a0a'))
+ax2.set_title('Protocol Distribution', fontsize=12, pad=15)
+for text in texts:
+    text.set_fontsize(10)
+    text.set_alpha(0.8)
+for autotext in autotexts:
+    autotext.set_color('white')
+    autotext.set_fontsize(9)
+    autotext.set_weight('bold')
+
+# Recreate chart 3
+n, bins, patches = ax3.hist(latency_data, bins=50, color='#00ff88', alpha=0.7, edgecolor='none')
+for i, patch in enumerate(patches):
+    if bins[i] < 1000:
+        patch.set_facecolor('#00ff88')
+    elif bins[i] < 2000:
+        patch.set_facecolor('#ffa500')
+    else:
+        patch.set_facecolor('#ff4444')
+ax3.set_xlabel('Latency (ms)', fontsize=10, alpha=0.7)
+ax3.set_ylabel('Count', fontsize=10, alpha=0.7)
+ax3.set_title(f'Latency Distribution (Average: {latency_data.mean():.0f}ms)', fontsize=12, pad=15)
+ax3.grid(axis='y', alpha=0.2, linestyle='--')
+ax3.spines['top'].set_visible(False)
+ax3.spines['right'].set_visible(False)
+ax3.axvline(1000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+ax3.axvline(2000, color='white', linestyle='--', alpha=0.3, linewidth=1)
+ax3.text(500, ax3.get_ylim()[1] * 0.9, 'Fast', ha='center', fontsize=10, alpha=0.5)
+ax3.text(1500, ax3.get_ylim()[1] * 0.9, 'Medium', ha='center', fontsize=10, alpha=0.5)
+ax3.text(3000, ax3.get_ylim()[1] * 0.9, 'Slow', ha='center', fontsize=10, alpha=0.5)
+
+plt.tight_layout()
+plt.savefig('public/analysis_charts.png', dpi=120, bbox_inches='tight', 
+           facecolor='#0a0a0a', edgecolor='none')
+plt.close()
+
+# Enhanced statistics panel
+fast_count = len(df[df['latency'] < 1000])
+medium_count = len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])
+slow_count = len(df[df['latency'] >= 2000])
+
+# Sample markers if too many (for performance)
+if len(df) > 10000:
+    print(f'  📌 Too many markers ({len(df):,}), sampling 10,000 for performance...')
+    df_sample = df.sample(n=10000, random_state=42)
+else:
+    df_sample = df
+
+# Add markers
+for _, row in df_sample.iterrows():
+    # Color coding based on latency
+    if row['latency'] < 1000:
+        color = '#00ff00'  # Green
+        size = 8
+    elif row['latency'] < 2000:
+        color = '#ffa500'  # Orange
+        size = 6
+    else:
+        color = '#ff0000'  # Red
+        size = 4
+    
+    # Country flag
+    flag_url = f'https://flagcdn.com/24x18/{row[\"code\"]}.png'
+    
+    # Cleaner popup without emojis in table
+    popup_content = f'''
+    <div style=\"font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif; font-size: 12px; width: 260px;\">
+      <div style=\"background: #1a1a1a; color: white; padding: 10px; margin: -8px -8px 10px -8px; border-radius: 4px 4px 0 0;\">
+        <img src=\"{flag_url}\" style=\"vertical-align: middle; margin-right: 8px; width: 20px;\" onerror=\"this.style.display=\\'none\\'\"> 
+        <strong style=\"font-size: 14px;\">{row[\"country\"]}</strong>
+      </div>
+      <div style=\"padding: 0 8px 8px 8px;\">
+        <div style=\"margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #eee;\">
+          <div style=\"color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;\">Address</div>
+          <div style=\"font-family: monospace; font-size: 12px;\">{row[\"ip\"]}:{row[\"port\"]}</div>
+        </div>
+        <div style=\"display: grid; grid-template-columns: 1fr 1fr; gap: 12px;\">
+          <div>
+            <div style=\"color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;\">Location</div>
+            <div style=\"font-size: 11px;\">{row[\"city\"]}</div>
+          </div>
+          <div>
+            <div style=\"color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;\">Protocol</div>
+            <div style=\"font-size: 11px;\">{row[\"protocol\"].upper()}</div>
+          </div>
+          <div>
+            <div style=\"color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;\">Latency</div>
+            <div style=\"font-size: 11px; font-weight: 600; color: {\"#00c851\" if row[\"latency\"] < 1000 else \"#ffbb33\" if row[\"latency\"] < 2000 else \"#ff4444\"}\">{row[\"latency\"]}ms</div>
+          </div>
+          <div>
+            <div style=\"color: #666; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;\">ISP</div>
+            <div style=\"font-size: 11px;\">{row[\"isp\"][:20]}...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    '''
+    
+    folium.CircleMarker(
+        location=[row['lat'], row['lon']],
+        radius=size,
+        color='white',
+        weight=1,
+        fill=True,
+        fillColor=color,
+        fillOpacity=0.8,
+        popup=folium.Popup(popup_content, max_width=300),
+        tooltip=f'{row[\"country\"]} | {row[\"latency\"]}ms'
+    ).add_to(marker_cluster)
+
+# Create all HTML elements as a single template
+html_template = f'''
+<!DOCTYPE html>
+<html>
+<head>
+    {{{{{{ header }}}}}}
+</head>
+<body>
+    {{{{{{ html }}}}}}
+    
+    <style>
+    /* Custom styles for the map elements */
+    .marker-cluster {{{{
+        background-clip: padding-box;
+        border-radius: 20px;
+    }}}}
+    .marker-cluster div {{{{
+        width: 30px;
+        height: 30px;
+        margin-left: 5px;
+        margin-top: 5px;
+        text-align: center;
+        border-radius: 15px;
+        font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Arial, sans-serif;
+        font-weight: 600;
+        font-size: 12px;
+        line-height: 30px;
+    }}}}
+    .marker-cluster-small {{{{
+        background-color: rgba(0, 255, 136, 0.3);
+    }}}}
+    .marker-cluster-small div {{{{
+        background-color: rgba(0, 255, 136, 0.8);
+        color: #000;
+    }}}}
+    .marker-cluster-medium {{{{
+        background-color: rgba(255, 165, 0, 0.3);
+    }}}}
+    .marker-cluster-medium div {{{{
+        background-color: rgba(255, 165, 0, 0.8);
+        color: #000;
+    }}}}
+    .marker-cluster-large {{{{
+        background-color: rgba(255, 68, 68, 0.3);
+    }}}}
+    .marker-cluster-large div {{{{
+        background-color: rgba(255, 68, 68, 0.8);
+        color: #fff;
+    }}}}
+    
+    /* Hide Leaflet attribution */
+    .leaflet-control-attribution {{{{
+        display: none;
+    }}}}
+    
+    /* Custom zoom control styling */
+    .leaflet-control-zoom {{{{
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        background: rgba(15, 15, 15, 0.85) !important;
+        backdrop-filter: blur(10px);
+        border-radius: 6px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+    }}}}
+    .leaflet-control-zoom a {{{{
+        background-color: transparent !important;
+        color: rgba(255, 255, 255, 0.8) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+    }}}}
+    .leaflet-control-zoom a:hover {{{{
+        background-color: rgba(255, 255, 255, 0.1) !important;
+        color: white !important;
+    }}}}
+    .leaflet-control-zoom a:last-child {{{{
+        border-bottom: none !important;
+    }}}}
+    
+    /* Fullscreen button styling */
+    .leaflet-control-fullscreen a {{{{
+        background: rgba(15, 15, 15, 0.85) !important;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 6px !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+    }}}}
+    
+    /* Mouse position styling */
+    .leaflet-control-mouseposition {{{{
+        background: rgba(15, 15, 15, 0.85) !important;
+        backdrop-filter: blur(10px);
+        color: rgba(255, 255, 255, 0.6) !important;
+        padding: 4px 8px !important;
+        font-size: 11px !important;
+        font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Arial, sans-serif;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 4px !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+    }}}}
+    
+    /* Minimap styling */
+    .leaflet-control-minimap {{{{
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.3) !important;
+        border-radius: 6px !important;
+        overflow: hidden;
+    }}}}
+    .leaflet-control-minimap-toggle-display {{{{
+        background-color: rgba(15, 15, 15, 0.85) !important;
+        border-radius: 4px !important;
+    }}}}
+    </style>
+    
+    <!-- Statistics Panel -->
+    <div style=\"position: fixed; 
+                top: 20px; left: 20px; width: 280px; 
+                background: rgba(15, 15, 15, 0.85); 
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+                z-index: 1000; font-size: 12px; padding: 20px;
+                box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+                color: white; font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Arial, sans-serif;\">
+    
+    <div style=\"margin-bottom: 20px;\">
+      <h3 style=\"margin: 0; font-size: 16px; font-weight: 600;\">Global Proxy Network</h3>
+      <div style=\"font-size: 11px; color: #888; margin-top: 2px;\">
+        Live data from {len(data_sources)} sources
+      </div>
+    </div>
+    
+    <div style=\"display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;\">
+      <div style=\"background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 6px; text-align: center;\">
+        <div style=\"font-size: 24px; font-weight: 600;\">{len(all_proxies):,}</div>
+        <div style=\"font-size: 11px; color: #888; margin-top: 2px;\">Total Proxies</div>
+      </div>
+      <div style=\"background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 6px; text-align: center;\">
+        <div style=\"font-size: 24px; font-weight: 600;\">{df[\"country\"].nunique()}</div>
+        <div style=\"font-size: 11px; color: #888; margin-top: 2px;\">Countries</div>
+      </div>
+    </div>
+    
+    <div style=\"margin-bottom: 16px;\">
+      <div style=\"font-size: 11px; color: #888; margin-bottom: 8px;\">PERFORMANCE</div>
+      <div style=\"display: flex; justify-content: space-between; margin-bottom: 4px;\">
+        <div style=\"display: flex; align-items: center;\">
+          <div style=\"width: 8px; height: 8px; background: #00ff00; border-radius: 50%; margin-right: 8px;\"></div>
+          <span style=\"font-size: 11px;\">Fast (&lt;1s)</span>
+        </div>
+        <span style=\"font-size: 11px; font-weight: 600;\">{fast_count:,}</span>
+      </div>
+      <div style=\"display: flex; justify-content: space-between; margin-bottom: 4px;\">
+        <div style=\"display: flex; align-items: center;\">
+          <div style=\"width: 8px; height: 8px; background: #ffa500; border-radius: 50%; margin-right: 8px;\"></div>
+          <span style=\"font-size: 11px;\">Medium (1-2s)</span>
+        </div>
+        <span style=\"font-size: 11px; font-weight: 600;\">{medium_count:,}</span>
+      </div>
+      <div style=\"display: flex; justify-content: space-between;\">
+        <div style=\"display: flex; align-items: center;\">
+          <div style=\"width: 8px; height: 8px; background: #ff0000; border-radius: 50%; margin-right: 8px;\"></div>
+          <span style=\"font-size: 11px;\">Slow (&gt;2s)</span>
+        </div>
+        <span style=\"font-size: 11px; font-weight: 600;\">{slow_count:,}</span>
+      </div>
+    </div>
+    
+    <div style=\"padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.1);\">
+      <div style=\"display: flex; justify-content: space-between; margin-bottom: 8px;\">
+        <span style=\"font-size: 11px; color: #888;\">Average Latency</span>
+        <span style=\"font-size: 11px; font-weight: 600;\">{df[df[\"latency\"] < 9999][\"latency\"].mean():.0f}ms</span>
+      </div>
+      <div style=\"display: flex; justify-content: space-between;\">
+        <span style=\"font-size: 11px; color: #888;\">Last Updated</span>
+        <span style=\"font-size: 11px; font-weight: 600;\">{datetime.now().strftime(\"%H:%M UTC\")}</span>
+      </div>
+    </div>
+    </div>
+    
+    <!-- Legend -->
+    <div style=\"position: fixed; 
+                bottom: 20px; left: 20px;
+                background: rgba(15, 15, 15, 0.85); 
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                z-index: 1000; font-size: 11px; padding: 12px;
+                box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+                color: white; font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Arial, sans-serif;\">
+    
+    <div style=\"display: flex; align-items: center; gap: 16px;\">
+      <div style=\"display: flex; align-items: center;\">
+        <div style=\"width: 8px; height: 8px; background: #00ff00; border-radius: 50%; margin-right: 6px;\"></div>
+        <span>&lt;1s</span>
+      </div>
+      <div style=\"display: flex; align-items: center;\">
+        <div style=\"width: 8px; height: 8px; background: #ffa500; border-radius: 50%; margin-right: 6px;\"></div>
+        <span>1-2s</span>
+      </div>
+      <div style=\"display: flex; align-items: center;\">
+        <div style=\"width: 8px; height: 8px; background: #ff0000; border-radius: 50%; margin-right: 6px;\"></div>
+        <span>&gt;2s</span>
+      </div>
+    </div>
+    </div>
+    
+    <!-- Chart Preview Panel -->
+    <div style=\"position: fixed; bottom: 20px; right: 20px; 
+                width: 600px; height: 400px;
+                background: rgba(15, 15, 15, 0.95); 
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 8px;
+                z-index: 1000; padding: 20px;
+                box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+                color: white; font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Arial, sans-serif;\">
+        
+        <div style=\"font-size: 14px; font-weight: 600; margin-bottom: 16px; color: rgba(255,255,255,0.9);\">
+            📊 Analytics Dashboard
+        </div>
+        
+        <img src=\"data:image/png;base64,{chart_base64}\" 
+             style=\"width: 100%; height: calc(100% - 40px); object-fit: contain; border-radius: 4px;\">
+    </div>
+    
+    {{{{{{ script }}}}}}
+</body>
+</html>
+'''
+
+# Save the map with our custom template
+map_html = m._repr_html_()
+
+# Extract the parts we need from Folium's output
+import re
+
+# Extract header content (everything between <head> tags)
+header_match = re.search(r'<head[^>]*>(.*?)</head>', map_html, re.DOTALL)
+header_content = header_match.group(1) if header_match else ''
+
+# Extract map div
+map_div_match = re.search(r'(<div.*?id=\"map_.*?</div>)', map_html, re.DOTALL)
+map_div = map_div_match.group(1) if map_div_match else ''
+
+# Extract script content
+script_match = re.search(r'(<script[^>]*>.*?</script>)', map_html, re.DOTALL)
+script_content = script_match.group(1) if script_match else ''
+
+# Build final HTML
+final_html = html_template.format(
+    chart_base64=chart_base64
+).replace('{{ header }}', header_content).replace('{{ html }}', map_div).replace('{{ script }}', script_content)
+
+# Save the final HTML
+with open('public/index.html', 'w', encoding='utf-8') as f:
+    f.write(final_html)
+
+# Also save a data summary JSON
+summary_data = {
+    'timestamp': datetime.now().isoformat(),
+    'total_proxies': len(all_proxies),
+    'unique_ips': len(unique_ips),
+    'countries': df['country'].nunique(),
+    'average_latency': float(df[df['latency'] < 9999]['latency'].mean()),
+    'protocol_distribution': protocol_dist.to_dict(),
+    'top_countries': top_countries.to_dict(),
+    'data_sources': len(data_sources),
+    'performance_distribution': {
+        'fast': fast_count,
+        'medium': medium_count,
+        'slow': slow_count
+    }
+}
+
+with open('public/summary.json', 'w') as f:
+    json.dump(summary_data, f, indent=2)
+
+print(f'\\n🎉 SUCCESS!')
+print(f'✅ Generated interactive map with {len(all_proxies):,} proxies')
+print(f'🌍 Covering {df[\"country\"].nunique()} countries')
+print(f'📈 Average latency: {df[df[\"latency\"] < 9999][\"latency\"].mean():.0f}ms')
+print(f'🗺️ Map saved to: public/index.html')
+print(f'📊 Charts saved to: public/analysis_charts.png')
+print(f'📄 Summary saved to: public/summary.json')
+"
+
+      - name: Create index page for GitHub Pages
+        run: |
+          cat > public/.nojekyll << EOF
+          EOF
+
+      - name: Upload artifacts
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './public'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
