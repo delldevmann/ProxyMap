@@ -1,4 +1,4 @@
-name: Generate Enhanced Proxy Map - Improved
+name: Generate Enhanced Proxy Map - Fixed Schema
 
 on:
   schedule:
@@ -13,7 +13,6 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30  # Add timeout to prevent hanging
     
     environment:
       name: github-pages
@@ -33,86 +32,18 @@ jobs:
           pip install --upgrade pip
           pip install folium requests matplotlib pandas seaborn
 
-      - name: Generate proxy map with improved handling
+      - name: Generate proxy map with correct schema handling
         run: |
           python3 << 'EOF'
           import requests, folium, pandas as pd, matplotlib.pyplot as plt
           from folium.plugins import Fullscreen, MiniMap, FloatImage, MarkerCluster
-          import os, re, json, html, gc
+          import os, re, json
           from datetime import datetime
           import time
           from concurrent.futures import ThreadPoolExecutor, as_completed
-          import warnings
-          import numpy as np
-          warnings.filterwarnings('ignore')
-
-          # Configuration
-          CHUNK_SIZE = 5000  # Process proxies in chunks
-          MAX_PROXIES_PER_FILE = 10000  # Limit per file to manage memory
-          MAX_TOTAL_PROXIES = 50000  # Overall limit
-          GITHUB_API_BASE = "https://api.github.com"
-          
-          def check_rate_limit(response):
-              """Check and log GitHub API rate limit"""
-              if hasattr(response, 'headers'):
-                  remaining = response.headers.get('X-RateLimit-Remaining', 'Unknown')
-                  reset_time = response.headers.get('X-RateLimit-Reset', 'Unknown')
-                  
-                  if remaining != 'Unknown':
-                      remaining = int(remaining)
-                      if remaining < 10:
-                          print(f"⚠️  Low API rate limit: {remaining} requests remaining")
-                          if remaining < 5:
-                              wait_time = 60
-                              print(f"   Waiting {wait_time}s to avoid rate limit...")
-                              time.sleep(wait_time)
-                  
-                  return remaining
-              return None
-
-          def sanitize_html(text):
-              """Escape HTML special characters to prevent injection"""
-              if text is None:
-                  return 'N/A'
-              return html.escape(str(text))
-
-          def is_valid_coordinate(lat, lon):
-              """Enhanced coordinate validation"""
-              if lat is None or lon is None:
-                  return False
-              try:
-                  lat, lon = float(lat), float(lon)
-                  # Check for common invalid coordinates
-                  if lat == 0 and lon == 0:  # Null Island
-                      return False
-                  if abs(lat) > 90 or abs(lon) > 180:
-                      return False
-                  return True
-              except (ValueError, TypeError):
-                  return False
-
-          def validate_proxy_data(proxy):
-              """Validate that proxy has minimum required fields"""
-              if not isinstance(proxy, dict):
-                  return False
-              
-              # Check for IP
-              ip = proxy.get('ip') or proxy.get('host') or proxy.get('address')
-              if not ip:
-                  return False
-              
-              # Check for location
-              location = proxy.get('location', {})
-              if not location and 'lat' in proxy and 'lon' in proxy:
-                  location = proxy
-              
-              lat = location.get('lat')
-              lon = location.get('lon')
-              
-              return is_valid_coordinate(lat, lon)
 
           def fetch_with_retry(url, max_retries=3, timeout=60):
-              """Fetch URL with retry logic and rate limit handling"""
+              """Fetch URL with retry logic"""
               for attempt in range(max_retries):
                   try:
                       print(f"  Attempt {attempt + 1}/{max_retries} for {url}")
@@ -121,43 +52,28 @@ jobs:
                           'Accept': 'application/json'
                       })
                       
-                      # Check rate limit
-                      check_rate_limit(response)
-                      
                       if response.status_code == 200:
                           return response.json()
                       elif response.status_code == 429:
-                          wait_time = min(60, 2 ** attempt * 5)
-                          print(f"  Rate limited (429), waiting {wait_time}s...")
+                          wait_time = 2 ** attempt
+                          print(f"  Rate limited, waiting {wait_time}s...")
                           time.sleep(wait_time)
-                      elif response.status_code == 404:
-                          print(f"  File not found (404)")
-                          return None
                       else:
                           print(f"  HTTP {response.status_code}")
                           
-                  except requests.exceptions.Timeout:
-                      print(f"  Timeout on attempt {attempt + 1}")
-                  except requests.exceptions.ConnectionError:
-                      print(f"  Connection error on attempt {attempt + 1}")
                   except Exception as e:
-                      print(f"  Error on attempt {attempt + 1}: {type(e).__name__}: {e}")
+                      print(f"  Error on attempt {attempt + 1}: {e}")
                   
                   if attempt < max_retries - 1:
-                      time.sleep(min(30, 2 ** attempt))
+                      time.sleep(2 ** attempt)
               
               return None
 
           def find_all_proxy_files():
-              """Find ALL proxy files from the GitHub repo with error handling"""
+              """Find ALL proxy files from the GitHub repo"""
               try:
-                  api_url = f"{GITHUB_API_BASE}/repos/delldevmann/proxy-scraper/contents/results"
-                  response = requests.get(api_url, timeout=30, headers={
-                      'User-Agent': 'ProxyMapBot/1.0',
-                      'Accept': 'application/vnd.github.v3+json'
-                  })
-                  
-                  check_rate_limit(response)
+                  api_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
+                  response = requests.get(api_url, timeout=30)
                   
                   if response.status_code != 200:
                       print(f"GitHub API returned status {response.status_code}")
@@ -167,43 +83,26 @@ jobs:
                   print(f"Found {len(files)} files in results directory")
                   
                   proxy_files = []
-                  priority_keywords = ['summary', 'verified', 'working']  # Prioritize these
-                  
                   for file in files:
-                      if not isinstance(file, dict):
-                          continue
-                          
-                      filename = file.get('name', '')
-                      download_url = file.get('download_url')
-                      
-                      if not download_url:
-                          continue
-                      
-                      # Look for proxy JSON files
+                      filename = file['name']
+                      # Look for all types of proxy files
                       if (filename.endswith('.json') and 
                           any(keyword in filename.lower() for keyword in [
                               'all_proxies', 'working_proxies', 'verified_proxies', 
-                              'socks4', 'socks5', 'http', 'https', 'proxy'
+                              'socks4', 'socks5', 'http', 'https'
                           ])):
-                          
-                          # Determine priority
-                          priority = 1 if any(kw in filename.lower() for kw in priority_keywords) else 2
-                          
-                          print(f"Found proxy file: {filename} (priority: {priority})")
-                          proxy_files.append((download_url, filename, priority))
-                  
-                  # Sort by priority (1 = high, 2 = low)
-                  proxy_files.sort(key=lambda x: x[2])
+                          print(f"Found proxy file: {filename}")
+                          proxy_files.append((file['download_url'], filename))
                   
                   print(f"Total proxy files found: {len(proxy_files)}")
-                  return [(url, name) for url, name, _ in proxy_files]
+                  return proxy_files
                       
               except Exception as e:
-                  print(f"Error finding proxy files: {type(e).__name__}: {e}")
+                  print(f"Error finding proxy files: {e}")
                   return []
 
           def process_summary_data(summary_data):
-              """Process the summary JSON with robust schema handling"""
+              """Process the summary JSON with the actual schema format"""
               proxies = []
               
               if not summary_data or not isinstance(summary_data, dict):
@@ -211,104 +110,122 @@ jobs:
               
               print(f"Processing summary data with keys: {list(summary_data.keys())}")
               
-              # Process each protocol type
-              for protocol_type, protocol_data in summary_data.items():
-                  if not isinstance(protocol_data, dict):
-                      continue
+              # Check if we have the new schema format with "proxies" key
+              if "proxies" in summary_data:
+                  print(f"\n=== Processing NEW SCHEMA FORMAT ===")
+                  print(f"  Timestamp: {summary_data.get('timestamp', 'Unknown')}")
+                  print(f"  Total proxies: {summary_data.get('total_proxies', 0)}")
                   
-                  print(f"\n=== Processing {protocol_type.upper()} ===")
-                  print(f"  Total scraped: {protocol_data.get('total_scraped', 0):,}")
-                  print(f"  Verified proxies: {protocol_data.get('verified_proxies', 0)}")
-                  print(f"  Success rate: {protocol_data.get('verification_success_rate', 'Unknown')}")
-                  
-                  # Get sample proxies
-                  sample_proxies = protocol_data.get('sample_proxies', {})
-                  print(f"  Sample proxies available: {len(sample_proxies)}")
-                  
-                  processed_count = 0
-                  for proxy_key, proxy_data in sample_proxies.items():
-                      if processed_count >= MAX_PROXIES_PER_FILE:
-                          print(f"  Reached limit of {MAX_PROXIES_PER_FILE} proxies for {protocol_type}")
-                          break
+                  # Get the protocols breakdown
+                  proxies_by_type = summary_data.get("proxies", {})
+                  for protocol_type, protocol_proxies in proxies_by_type.items():
+                      print(f"\n  === Processing {protocol_type.upper()} proxies ===")
+                      print(f"    {protocol_type} proxies count: {summary_data.get(f'{protocol_type}_proxies', 0)}")
+                      print(f"    Actual entries: {len(protocol_proxies)}")
                       
-                      try:
-                          if not validate_proxy_data(proxy_data):
+                      # Process each proxy in this protocol
+                      for proxy_key, proxy_data in protocol_proxies.items():
+                          try:
+                              # Get location data
+                              location = proxy_data.get('location', {})
+                              
+                              # Extract coordinates
+                              lat = location.get('lat')
+                              lon = location.get('lon')
+                              
+                              if lat is not None and lon is not None:
+                                  lat, lon = float(lat), float(lon)
+                                  
+                                  if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                      # Extract port from the key (IP:PORT format)
+                                      port = proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown'
+                                      
+                                      proxies.append({
+                                          "ip": proxy_data.get('ip', proxy_key.split(':')[0] if ':' in proxy_key else proxy_key),
+                                          "port": port,
+                                          "latency": proxy_data.get('latency_ms', 9999),
+                                          "anonymity": proxy_data.get('anonymity', 'Unknown'),
+                                          "lat": lat,
+                                          "lon": lon,
+                                          "city": location.get('city', 'Unknown'),
+                                          "country": location.get('country', 'Unknown'),
+                                          "code": location.get('countryCode', 'xx').lower(),
+                                          "isp": location.get('isp', 'N/A'),
+                                          "source": f"summary_{protocol_type}",
+                                          "protocol": proxy_data.get('type', protocol_type),
+                                          "last_checked": proxy_data.get('last_checked', 'Unknown'),
+                                          "region": location.get('region', 'Unknown'),
+                                          "org": location.get('org', 'N/A'),
+                                          "as": location.get('as', 'N/A'),
+                                          "timezone": location.get('timezone', 'Unknown')
+                                      })
+                          except Exception as e:
+                              print(f"    Error processing proxy {proxy_key}: {e}")
                               continue
-                          
-                          location = proxy_data.get('location', {})
-                          lat = float(location.get('lat'))
-                          lon = float(location.get('lon'))
-                          
-                          proxies.append({
-                              "ip": sanitize_html(proxy_data.get('ip', '')),
-                              "port": sanitize_html(proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown'),
-                              "latency": min(9999, int(proxy_data.get('latency_ms', 9999))),
-                              "anonymity": sanitize_html(proxy_data.get('anonymity', 'Unknown')),
-                              "lat": lat,
-                              "lon": lon,
-                              "city": sanitize_html(location.get('city', 'Unknown')),
-                              "country": sanitize_html(location.get('country', 'Unknown')),
-                              "code": sanitize_html(location.get('countryCode', 'xx').lower()),
-                              "isp": sanitize_html(location.get('isp', 'N/A')),
-                              "source": f"summary_{protocol_type}",
-                              "protocol": sanitize_html(proxy_data.get('type', protocol_type)),
-                              "last_checked": sanitize_html(proxy_data.get('last_checked', 'Unknown')),
-                              "region": sanitize_html(location.get('region', 'Unknown')),
-                              "org": sanitize_html(location.get('org', 'N/A')),
-                              "as": sanitize_html(location.get('as', 'N/A')),
-                              "timezone": sanitize_html(location.get('timezone', 'Unknown'))
-                          })
-                          processed_count += 1
-                          
-                      except Exception as e:
+              
+                  # Also check if we have country distribution
+                  country_dist = summary_data.get('country_distribution', {})
+                  if country_dist:
+                      top_countries = sorted(country_dist.items(), key=lambda x: x[1], reverse=True)[:10]
+                      print("\n  === Country Distribution (Top 10) ===")
+                      for country, count in top_countries:
+                          print(f"    {country}: {count}")
+              
+              # Fallback for old schema format (if needed)
+              else:
+                  print(f"\n=== Processing OLD SCHEMA FORMAT ===")
+                  # Process each protocol type (socks4, http, socks5)
+                  for protocol_type, protocol_data in summary_data.items():
+                      if not isinstance(protocol_data, dict) or protocol_type in ('timestamp', 'total_proxies'):
                           continue
+                      
+                      print(f"\n=== Processing {protocol_type.upper()} ===")
+                      
+                      # Check if we have sample_proxies in this format
+                      sample_proxies = protocol_data.get('sample_proxies', {})
+                      if sample_proxies:
+                          print(f"  Sample proxies available: {len(sample_proxies)}")
+                          
+                          for proxy_key, proxy_data in sample_proxies.items():
+                              try:
+                                  location = proxy_data.get('location', {})
+                                  
+                                  # Extract coordinates
+                                  lat = location.get('lat')
+                                  lon = location.get('lon')
+                                  
+                                  if lat is not None and lon is not None:
+                                      lat, lon = float(lat), float(lon)
+                                      
+                                      if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                          proxies.append({
+                                              "ip": proxy_data.get('ip', ''),
+                                              "port": proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown',
+                                              "latency": proxy_data.get('latency_ms', 9999),
+                                              "anonymity": proxy_data.get('anonymity', 'Unknown'),
+                                              "lat": lat,
+                                              "lon": lon,
+                                              "city": location.get('city', 'Unknown'),
+                                              "country": location.get('country', 'Unknown'),
+                                              "code": location.get('countryCode', 'xx').lower(),
+                                              "isp": location.get('isp', 'N/A'),
+                                              "source": f"summary_{protocol_type}",
+                                              "protocol": proxy_data.get('type', protocol_type),
+                                              "last_checked": proxy_data.get('last_checked', 'Unknown'),
+                                              "region": location.get('region', 'Unknown'),
+                                              "org": location.get('org', 'N/A'),
+                                              "as": location.get('as', 'N/A'),
+                                              "timezone": location.get('timezone', 'Unknown')
+                                          })
+                              except Exception as e:
+                                  print(f"    Error processing proxy {proxy_key}: {e}")
+                                  continue
               
               print(f"✅ Extracted {len(proxies)} valid proxies from summary")
               return proxies
 
-          def process_proxy_chunk(proxy_chunk, filename):
-              """Process a chunk of proxies"""
-              proxies = []
-              
-              for proxy in proxy_chunk:
-                  if not validate_proxy_data(proxy):
-                      continue
-                  
-                  try:
-                      # Extract IP
-                      proxy_ip = proxy.get('ip') or proxy.get('host') or proxy.get('address')
-                      
-                      # Extract location
-                      location = proxy.get('location', {})
-                      if not location and 'lat' in proxy and 'lon' in proxy:
-                          location = proxy
-                      
-                      lat = float(location.get('lat'))
-                      lon = float(location.get('lon'))
-                      
-                      proxies.append({
-                          "ip": sanitize_html(proxy_ip),
-                          "port": sanitize_html(str(proxy.get('port', 'Unknown'))),
-                          "latency": min(9999, int(proxy.get('latency_ms') or proxy.get('latency', 9999))),
-                          "anonymity": sanitize_html(proxy.get('anonymity', 'Unknown')),
-                          "lat": lat,
-                          "lon": lon,
-                          "city": sanitize_html(location.get('city', 'Unknown')),
-                          "country": sanitize_html(location.get('country', 'Unknown')),
-                          "code": sanitize_html(location.get('countryCode', 'xx').lower()),
-                          "isp": sanitize_html(location.get('isp', 'N/A')),
-                          "source": sanitize_html(filename),
-                          "protocol": sanitize_html(proxy.get('type') or proxy.get('protocol', 'Unknown')),
-                          "last_checked": sanitize_html(proxy.get('last_checked', 'Unknown'))
-                      })
-                      
-                  except Exception:
-                      continue
-              
-              return proxies
-
           def process_complete_file_data(file_data, filename):
-              """Process complete proxy files with memory-efficient chunking"""
+              """Process complete proxy files that may have different structures"""
               proxies = []
               
               if not file_data:
@@ -316,72 +233,75 @@ jobs:
               
               print(f"Processing {filename}: {type(file_data)}")
               
-              # Debug: Show structure
-              if isinstance(file_data, dict):
-                  print(f"  Top-level keys: {list(file_data.keys())[:10]}")
-              
-              # Extract proxy candidates
+              # Handle different file structures
               proxy_candidates = []
               
               if isinstance(file_data, list):
-                  # Direct list of proxies
                   proxy_candidates = file_data
               elif isinstance(file_data, dict):
-                  # Check if the dict IS the proxy data (all keys are IPs)
-                  sample_keys = list(file_data.keys())[:5]
-                  if sample_keys and all(':' in str(k) or '.' in str(k) for k in sample_keys):
-                      # This is a dict where keys are IP:port
-                      print(f"  Detected IP:port dictionary format")
-                      for proxy_key, proxy_data in list(file_data.items())[:MAX_PROXIES_PER_FILE]:
-                          if isinstance(proxy_data, dict):
-                              # Add the IP from the key if not in the data
-                              if 'ip' not in proxy_data and ':' in proxy_key:
-                                  proxy_data['ip'] = proxy_key.split(':')[0]
-                                  proxy_data['port'] = proxy_key.split(':')[1]
-                              proxy_candidates.append(proxy_data)
-                  else:
-                      # Handle various nested structures
-                      for key, value in file_data.items():
-                          if isinstance(value, list):
-                              proxy_candidates.extend(value[:MAX_PROXIES_PER_FILE - len(proxy_candidates)])
-                          elif isinstance(value, dict):
-                              # Check for nested proxy structures
-                              if 'sample_proxies' in value:
-                                  sample_proxies = value['sample_proxies']
-                                  if isinstance(sample_proxies, dict):
-                                      for pk, pv in list(sample_proxies.items())[:MAX_PROXIES_PER_FILE - len(proxy_candidates)]:
-                                          if isinstance(pv, dict):
-                                              if 'ip' not in pv and ':' in pk:
-                                                  pv['ip'] = pk.split(':')[0]
-                                                  pv['port'] = pk.split(':')[1]
-                                              proxy_candidates.append(pv)
-                              elif any(field in value for field in ['ip', 'host', 'address', 'location']):
-                                  proxy_candidates.append(value)
-                              else:
-                                  # Maybe it's a protocol section
-                                  for nested_key, nested_value in value.items():
-                                      if isinstance(nested_value, dict) and any(field in nested_value for field in ['ip', 'host', 'location']):
-                                          proxy_candidates.append(nested_value)
-                                      elif isinstance(nested_value, list):
-                                          proxy_candidates.extend(nested_value[:MAX_PROXIES_PER_FILE - len(proxy_candidates)])
+                  # If it's a dict, look for proxy lists in various keys
+                  for key, value in file_data.items():
+                      if isinstance(value, list):
+                          proxy_candidates.extend(value)
+                      elif isinstance(value, dict):
+                          # Check if it's a protocol group like our summary
+                          if 'sample_proxies' in value:
+                              for proxy_key, proxy_data in value['sample_proxies'].items():
+                                  proxy_candidates.append(proxy_data)
+                          elif any(field in value for field in ['ip', 'host', 'address']):
+                              proxy_candidates.append(value)
+                          else:
+                              # Might be nested proxy objects
+                              for nested_key, nested_value in value.items():
+                                  if isinstance(nested_value, dict) and any(field in nested_value for field in ['ip', 'host', 'location']):
+                                      proxy_candidates.append(nested_value)
               
-              # Limit candidates
-              proxy_candidates = proxy_candidates[:MAX_PROXIES_PER_FILE]
               print(f"  Found {len(proxy_candidates)} proxy candidates")
               
-              if not proxy_candidates:
-                  print(f"  No valid proxy structure found in {filename}")
-                  return proxies
-              
-              # Process in chunks
-              for i in range(0, len(proxy_candidates), CHUNK_SIZE):
-                  chunk = proxy_candidates[i:i+CHUNK_SIZE]
-                  chunk_proxies = process_proxy_chunk(chunk, filename)
-                  proxies.extend(chunk_proxies)
+              for i, proxy in enumerate(proxy_candidates):
+                  if i % 1000 == 0 and i > 0:
+                      print(f"    Processing: {i}/{len(proxy_candidates)}")
                   
-                  if i % (CHUNK_SIZE * 2) == 0 and i > 0:
-                      print(f"    Processed: {i}/{len(proxy_candidates)}")
-                      gc.collect()  # Force garbage collection
+                  if not isinstance(proxy, dict):
+                      continue
+                  
+                  # Extract IP
+                  proxy_ip = proxy.get('ip') or proxy.get('host') or proxy.get('address')
+                  if not proxy_ip:
+                      continue
+                  
+                  # Extract location
+                  location = proxy.get('location', {})
+                  if not location:
+                      # Sometimes location data is at root level
+                      if 'lat' in proxy and 'lon' in proxy:
+                          location = proxy
+                  
+                  lat = location.get('lat')
+                  lon = location.get('lon')
+                  
+                  if lat is not None and lon is not None:
+                      try:
+                          lat, lon = float(lat), float(lon)
+                          
+                          if -90 <= lat <= 90 and -180 <= lon <= 180:
+                              proxies.append({
+                                  "ip": proxy_ip,
+                                  "port": proxy.get('port', 'Unknown'),
+                                  "latency": proxy.get('latency_ms') or proxy.get('latency', 9999),
+                                  "anonymity": proxy.get('anonymity', 'Unknown'),
+                                  "lat": lat,
+                                  "lon": lon,
+                                  "city": location.get('city', 'Unknown'),
+                                  "country": location.get('country', 'Unknown'),
+                                  "code": location.get('countryCode', 'xx').lower(),
+                                  "isp": location.get('isp', 'N/A'),
+                                  "source": filename,
+                                  "protocol": proxy.get('type') or proxy.get('protocol', 'Unknown'),
+                                  "last_checked": proxy.get('last_checked', 'Unknown')
+                              })
+                      except (ValueError, TypeError):
+                          continue
               
               print(f"✅ Extracted {len(proxies)} valid proxies from {filename}")
               return proxies
@@ -392,9 +312,8 @@ jobs:
           
           print("=== COMPREHENSIVE PROXY DATA COLLECTION ===")
           print(f"Starting at: {datetime.now()}")
-          print(f"Limits: {MAX_PROXIES_PER_FILE:,} per file, {MAX_TOTAL_PROXIES:,} total")
           
-          # 1. Fetch summary data (highest priority)
+          # 1. MANDATORY: Fetch summary data (this gives us the verified proxies)
           print("\n1. Fetching SUMMARY data (verified proxies)...")
           summary_url = 'https://raw.githubusercontent.com/delldevmann/proxy-scraper/main/results/summary_latest.json'
           summary_data = fetch_with_retry(summary_url)
@@ -411,63 +330,50 @@ jobs:
                   protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
               print(f"  Protocol breakdown: {protocol_counts}")
           else:
-              print("⚠️  Failed to fetch summary data - will continue with other sources")
+              print("❌ Failed to fetch summary data - this is critical!")
           
           # 2. Fetch additional complete datasets
-          if len(all_proxies) < MAX_TOTAL_PROXIES:
-              print("\n2. Finding additional proxy files...")
-              proxy_files = find_all_proxy_files()
+          print("\n2. Finding additional proxy files...")
+          proxy_files = find_all_proxy_files()
+          
+          if proxy_files:
+              print(f"Processing {len(proxy_files)} additional files...")
               
-              if proxy_files:
-                  # Limit files to process based on remaining capacity
-                  remaining_capacity = MAX_TOTAL_PROXIES - len(all_proxies)
-                  max_files = min(10, max(1, remaining_capacity // 5000))
+              # Limit concurrent processing to avoid overwhelming GitHub API
+              MAX_FILES = 10  # Process top 10 files to avoid rate limits
+              files_to_process = proxy_files[:MAX_FILES]
+              
+              def fetch_and_process_file(file_info):
+                  url, filename = file_info
+                  print(f"\nFetching {filename}...")
                   
-                  files_to_process = proxy_files[:max_files]
-                  print(f"Processing {len(files_to_process)} files (based on capacity)...")
+                  file_data = fetch_with_retry(url, max_retries=2, timeout=90)
+                  if file_data:
+                      return process_complete_file_data(file_data, filename)
+                  return []
+              
+              # Process files with threading but controlled
+              with ThreadPoolExecutor(max_workers=3) as executor:
+                  future_to_file = {executor.submit(fetch_and_process_file, file_info): file_info 
+                                   for file_info in files_to_process}
                   
-                  def fetch_and_process_file(file_info):
-                      url, filename = file_info
-                      
-                      # Skip if we've reached capacity
-                      if len(all_proxies) >= MAX_TOTAL_PROXIES:
-                          return []
-                      
-                      print(f"\nFetching {filename}...")
-                      
-                      file_data = fetch_with_retry(url, max_retries=2, timeout=90)
-                      if file_data:
-                          return process_complete_file_data(file_data, filename)
-                      return []
-                  
-                  # Process files with controlled concurrency
-                  with ThreadPoolExecutor(max_workers=3) as executor:
-                      future_to_file = {executor.submit(fetch_and_process_file, file_info): file_info 
-                                       for file_info in files_to_process}
-                      
-                      for future in as_completed(future_to_file):
-                          file_info = future_to_file[future]
-                          try:
-                              file_proxies = future.result()
-                              if file_proxies:
-                                  # Remove duplicates based on IP
-                                  existing_ips = {p["ip"] for p in all_proxies}
-                                  new_proxies = [p for p in file_proxies if p["ip"] not in existing_ips]
-                                  
-                                  # Check capacity
-                                  remaining = MAX_TOTAL_PROXIES - len(all_proxies)
-                                  if remaining > 0:
-                                      new_proxies = new_proxies[:remaining]
-                                      
-                                      if new_proxies:
-                                          all_proxies.extend(new_proxies)
-                                          data_sources.append(f"{file_info[1]}: +{len(new_proxies)} additional")
-                                          print(f"✅ Added {len(new_proxies)} new proxies from {file_info[1]}")
-                                  else:
-                                      print(f"⚠️  Reached capacity limit of {MAX_TOTAL_PROXIES} proxies")
-                                      break
-                          except Exception as e:
-                              print(f"❌ Error processing {file_info[1]}: {type(e).__name__}: {e}")
+                  for future in as_completed(future_to_file):
+                      file_info = future_to_file[future]
+                      try:
+                          file_proxies = future.result()
+                          if file_proxies:
+                              # Remove duplicates based on IP
+                              existing_ips = {p["ip"] for p in all_proxies}
+                              new_proxies = [p for p in file_proxies if p["ip"] not in existing_ips]
+                              
+                              if new_proxies:
+                                  all_proxies.extend(new_proxies)
+                                  data_sources.append(f"{file_info[1]}: +{len(new_proxies)} additional")
+                                  print(f"✅ Added {len(new_proxies)} new proxies from {file_info[1]}")
+                              else:
+                                  print(f"ℹ️  No new proxies from {file_info[1]} (all duplicates)")
+                      except Exception as e:
+                          print(f"❌ Error processing {file_info[1]}: {e}")
 
           print(f"\n=== FINAL RESULTS ===")
           print(f"🎉 Total unique proxies collected: {len(all_proxies):,}")
@@ -476,60 +382,16 @@ jobs:
           for i, source in enumerate(data_sources, 1):
               print(f"  {i}. {source}")
 
-          # Check if we have any data
           if not all_proxies:
-              print("\n❌ No proxy data found!")
-              print("Creating placeholder page...")
-              
-              # Create a minimal HTML page explaining the issue
-              os.makedirs("public", exist_ok=True)
-              
-              with open("public/index.html", "w") as f:
-                  f.write("""
-                  <!DOCTYPE html>
-                  <html>
-                  <head>
-                      <title>Proxy Map - No Data Available</title>
-                      <style>
-                          body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-                          h1 { color: #e74c3c; }
-                          .info { background: #f8f9fa; padding: 20px; border-radius: 10px; max-width: 600px; margin: 0 auto; }
-                      </style>
-                  </head>
-                  <body>
-                      <h1>⚠️ No Proxy Data Available</h1>
-                      <div class="info">
-                          <p>The proxy data could not be fetched at this time.</p>
-                          <p>Possible reasons:</p>
-                          <ul style="text-align: left; display: inline-block;">
-                              <li>The data source is temporarily unavailable</li>
-                              <li>API rate limits have been exceeded</li>
-                              <li>Network connectivity issues</li>
-                          </ul>
-                          <p>The system will retry in the next scheduled run.</p>
-                          <p><small>Last attempt: """ + datetime.now().strftime('%Y-%m-%d %H:%M UTC') + """</small></p>
-                      </div>
-                  </body>
-                  </html>
-                  """)
-              
-              print("✅ Created placeholder page")
-              exit(0)  # Exit successfully to allow deployment
+              print("❌ No proxy data found - cannot generate map")
+              exit(1)
 
           # Analyze the data
           df = pd.DataFrame(all_proxies)
           
-          # Clean up latency values
-          df['latency'] = pd.to_numeric(df['latency'], errors='coerce').fillna(9999)
-          df['latency'] = df['latency'].clip(upper=9999)
-          
-          # Calculate average latency safely
-          valid_latencies = df[df['latency'] < 9999]['latency']
-          avg_latency = valid_latencies.mean() if len(valid_latencies) > 0 else 9999
-          
           print(f"\n📈 ANALYSIS:")
           print(f"  🌍 Countries represented: {df['country'].nunique()}")
-          print(f"  ⚡ Average latency: {avg_latency:.0f}ms")
+          print(f"  ⚡ Average latency: {df['latency'].mean():.0f}ms")
           print(f"  🚀 Fast proxies (<1000ms): {len(df[df['latency'] < 1000])}")
           print(f"  🟡 Medium proxies (1000-2000ms): {len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])}")
           print(f"  🔴 Slow proxies (>2000ms): {len(df[df['latency'] >= 2000])}")
@@ -550,10 +412,8 @@ jobs:
           m = folium.Map(
               location=[lat_center, lon_center], 
               zoom_start=2, 
-              tiles="CartoDB dark_matter",
-              control_scale=True,
-              prefer_canvas=True,  # Better performance
-              max_zoom=18
+              tiles="CartoDB dark_matter",  # Dark theme looks better
+              control_scale=True
           )
           
           # Add map plugins
@@ -567,26 +427,12 @@ jobs:
               control=True,
               options={
                   'maxClusterRadius': 50,
-                  'disableClusteringAtZoom': 10,
-                  'spiderfyOnMaxZoom': True,
-                  'showCoverageOnHover': False
+                  'disableClusteringAtZoom': 10
               }
           ).add_to(m)
 
-          # Add markers (limit if too many)
-          markers_to_add = min(len(df), 20000)  # Limit markers for performance
-          if markers_to_add < len(df):
-              print(f"⚠️  Limiting map markers to {markers_to_add:,} for performance")
-              df_sample = df.sample(n=markers_to_add, random_state=42)
-          else:
-              df_sample = df
-          
-          print(f"Adding {len(df_sample):,} markers to map...")
-          
-          for idx, (_, row) in enumerate(df_sample.iterrows()):
-              if idx % 1000 == 0 and idx > 0:
-                  print(f"  Progress: {idx}/{len(df_sample)} markers")
-              
+          # Add markers with enhanced styling
+          for _, row in df.iterrows():
               # Color coding based on latency
               if row["latency"] < 1000:
                   color = '#00ff00'  # Bright green for fast
@@ -598,7 +444,7 @@ jobs:
                   color = '#ff0000'  # Red for slow
                   size = 4
               
-              # Country flag URL (with fallback)
+              # Country flag URL
               flag_url = f"https://flagcdn.com/24x18/{row['code']}.png"
               
               # Enhanced popup with all available data
@@ -618,6 +464,8 @@ jobs:
                   <tr><td><strong>📡 Protocol</strong></td><td>{row['protocol'].upper()}</td></tr>
                   <tr><td><strong>📊 Source</strong></td><td>{row['source']}</td></tr>
                   <tr><td><strong>🕒 Last Check</strong></td><td>{row.get('last_checked', 'Unknown')}</td></tr>
+                  {f"<tr><td><strong>🏗️ Org</strong></td><td>{row.get('org', 'N/A')}</td></tr>" if row.get('org') != 'N/A' else ""}
+                  {f"<tr><td><strong>🌍 AS</strong></td><td>{row.get('as', 'N/A')}</td></tr>" if row.get('as') != 'N/A' else ""}
                 </table>
               </div>
               """
@@ -643,7 +491,7 @@ jobs:
           
           # Top countries bar chart
           top_countries = df["country"].value_counts().nlargest(12)
-          colors = plt.cm.viridis(np.linspace(0, 1, len(top_countries)))
+          colors = plt.cm.viridis(range(len(top_countries)))
           
           bars = ax1.barh(range(len(top_countries)), top_countries.values, color=colors)
           ax1.set_yticks(range(len(top_countries)))
@@ -659,9 +507,8 @@ jobs:
           
           # Protocol distribution pie chart
           protocol_counts = df['protocol'].value_counts()
-          colors_pie = plt.cm.Set3(np.linspace(0, 1, len(protocol_counts)))
           ax2.pie(protocol_counts.values, labels=protocol_counts.index, autopct='%1.1f%%', 
-                  colors=colors_pie)
+                  colors=plt.cm.Set3(range(len(protocol_counts))))
           ax2.set_title("Protocol Distribution", fontweight='bold', pad=20)
           
           plt.tight_layout()
@@ -704,7 +551,7 @@ jobs:
           <div style="margin-bottom: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span style="font-size: 12px;">⚡ Avg Latency:</span>
-              <span style="font-weight: bold; color: #ffa500;">{avg_latency:.0f}ms</span>
+              <span style="font-weight: bold; color: #ffa500;">{df['latency'].mean():.0f}ms</span>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span style="font-size: 12px;">📊 Data Sources:</span>
@@ -777,102 +624,21 @@ jobs:
           </div>
           """
           
-          # Add file size warning
-          map_size_warning = ""
-          if len(df_sample) > 10000:
-              map_size_warning = f"""
-              <div style="position: fixed; 
-                          bottom: 10px; left: 10px; 
-                          background: rgba(255, 152, 0, 0.9); 
-                          color: white; padding: 10px; 
-                          border-radius: 6px; font-size: 12px;
-                          z-index: 9999;">
-                ⚠️ Showing {len(df_sample):,} of {len(df):,} proxies for performance
-              </div>
-              """
-          
-          # Add the charts as floating image (with error handling)
-          try:
-              if os.path.exists("public/analysis_charts.png"):
-                  FloatImage("analysis_charts.png", bottom=20, right=20).add_to(m)
-          except Exception as e:
-              print(f"⚠️  Could not add charts to map: {e}")
+          # Add the charts as floating image
+          FloatImage("public/analysis_charts.png", bottom=20, right=20).add_to(m)
           
           # Add the info panels
           m.get_root().html.add_child(folium.Element(stats_html))
           m.get_root().html.add_child(folium.Element(legend_html))
-          if map_size_warning:
-              m.get_root().html.add_child(folium.Element(map_size_warning))
           
           # Save the map
           m.save("public/index.html")
           
-          # Check output file size
-          try:
-              output_size = os.path.getsize("public/index.html") / (1024 * 1024)  # MB
-              print(f"\n📁 Output file size: {output_size:.1f}MB")
-              if output_size > 50:
-                  print(f"⚠️  Large output file! Consider reducing proxy count.")
-              if output_size > 90:
-                  print(f"❌ File too large for GitHub Pages (>100MB limit)")
-          except Exception as e:
-              print(f"Could not check file size: {e}")
-          
-          # Create a summary JSON for diagnostics
-          summary_stats = {
-              "generated_at": datetime.now().isoformat(),
-              "total_proxies": len(all_proxies),
-              "unique_countries": int(df['country'].nunique()),
-              "average_latency_ms": float(avg_latency),
-              "data_sources": len(data_sources),
-              "protocol_distribution": df['protocol'].value_counts().to_dict(),
-              "top_countries": df['country'].value_counts().head(20).to_dict(),
-              "performance_distribution": {
-                  "fast": int(fast_count),
-                  "medium": int(medium_count),
-                  "slow": int(slow_count)
-              },
-              "markers_on_map": len(df_sample),
-              "output_size_mb": output_size if 'output_size' in locals() else None
-          }
-          
-          with open("public/stats.json", "w") as f:
-              json.dump(summary_stats, f, indent=2)
-          
           print(f"\n🎉 SUCCESS!")
-          print(f"✅ Generated interactive map with {len(df_sample):,} markers")
+          print(f"✅ Generated interactive map with {len(all_proxies):,} proxies")
           print(f"🌍 Covering {df['country'].nunique()} countries")
-          print(f"📊 From {len(all_proxies):,} total proxies collected")
+          print(f"📈 That's {len(all_proxies) - 15:,} more proxies than the 15-proxy limit!")
           print(f"🗺️ Map saved to: public/index.html")
           print(f"📊 Charts saved to: public/analysis_charts.png")
-          print(f"📈 Stats saved to: public/stats.json")
-          
-          # Final memory cleanup
-          del df, all_proxies
-          gc.collect()
           
           EOF
-
-      - name: Check generated files
-        run: |
-          echo "Generated files:"
-          ls -la public/
-          if [ -f public/index.html ]; then
-            echo "Map size: $(du -h public/index.html | cut -f1)"
-          fi
-          if [ -f public/stats.json ]; then
-            echo "Statistics:"
-            cat public/stats.json | head -20
-          fi
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: 'public'
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
