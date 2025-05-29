@@ -233,31 +233,141 @@ jobs:
               
               print(f"Processing {filename}: {type(file_data)}")
               
-              # Handle different file structures
+              # Check if the file has the same structure as the summary file
+              if isinstance(file_data, dict) and "proxies" in file_data:
+                  print(f"  Found new schema format with 'proxies' key")
+                  proxies_by_type = file_data.get("proxies", {})
+                  
+                  # Process each protocol
+                  for protocol_type, protocol_proxies in proxies_by_type.items():
+                      print(f"  Processing {protocol_type} proxies: {len(protocol_proxies)} entries")
+                      
+                      # Process each proxy entry
+                      for proxy_key, proxy_data in protocol_proxies.items():
+                          try:
+                              # Get location data
+                              location = proxy_data.get('location', {})
+                              
+                              # Extract coordinates
+                              lat = location.get('lat')
+                              lon = location.get('lon')
+                              
+                              if lat is not None and lon is not None:
+                                  lat, lon = float(lat), float(lon)
+                                  
+                                  if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                      # Extract port from the key (IP:PORT format)
+                                      port = proxy_key.split(':')[1] if ':' in proxy_key else 'Unknown'
+                                      
+                                      proxies.append({
+                                          "ip": proxy_data.get('ip', proxy_key.split(':')[0] if ':' in proxy_key else proxy_key),
+                                          "port": port,
+                                          "latency": proxy_data.get('latency_ms', 9999),
+                                          "anonymity": proxy_data.get('anonymity', 'Unknown'),
+                                          "lat": lat,
+                                          "lon": lon,
+                                          "city": location.get('city', 'Unknown'),
+                                          "country": location.get('country', 'Unknown'),
+                                          "code": location.get('countryCode', 'xx').lower(),
+                                          "isp": location.get('isp', 'N/A'),
+                                          "source": filename,
+                                          "protocol": proxy_data.get('type', protocol_type),
+                                          "last_checked": proxy_data.get('last_checked', 'Unknown'),
+                                          "region": location.get('region', 'Unknown'),
+                                          "org": location.get('org', 'N/A'),
+                                          "as": location.get('as', 'N/A'),
+                                          "timezone": location.get('timezone', 'Unknown')
+                                      })
+                          except Exception as e:
+                              if proxy_key.count(':') > 0:  # Only log errors for what look like real proxies
+                                  print(f"    Error processing proxy {proxy_key}: {e}")
+                              continue
+                  
+                  return proxies
+              
+              # Handle different file structures for older formats
               proxy_candidates = []
               
               if isinstance(file_data, list):
                   proxy_candidates = file_data
               elif isinstance(file_data, dict):
-                  # If it's a dict, look for proxy lists in various keys
-                  for key, value in file_data.items():
-                      if isinstance(value, list):
-                          proxy_candidates.extend(value)
-                      elif isinstance(value, dict):
-                          # Check if it's a protocol group like our summary
-                          if 'sample_proxies' in value:
-                              for proxy_key, proxy_data in value['sample_proxies'].items():
-                                  proxy_candidates.append(proxy_data)
-                          elif any(field in value for field in ['ip', 'host', 'address']):
-                              proxy_candidates.append(value)
-                          else:
-                              # Might be nested proxy objects
-                              for nested_key, nested_value in value.items():
-                                  if isinstance(nested_value, dict) and any(field in nested_value for field in ['ip', 'host', 'location']):
-                                      proxy_candidates.append(nested_value)
+                  # Try several common patterns
+                  
+                  # Pattern 1: "proxies" at root containing a list
+                  if "proxies" in file_data and isinstance(file_data["proxies"], list):
+                      proxy_candidates = file_data["proxies"]
+                  
+                  # Pattern 2: "data" at root containing a list
+                  elif "data" in file_data and isinstance(file_data["data"], list):
+                      proxy_candidates = file_data["data"]
+                  
+                  # Pattern 3: Protocol-specific keys at root
+                  else:
+                      for key, value in file_data.items():
+                          # Skip metadata keys
+                          if key in ["timestamp", "total_proxies", "country_distribution"]:
+                              continue
+                              
+                          if isinstance(value, list):
+                              print(f"  Found list under key '{key}': {len(value)} items")
+                              proxy_candidates.extend(value)
+                          elif isinstance(value, dict):
+                              # Check for nested structure
+                              for sub_key, sub_value in value.items():
+                                  if isinstance(sub_value, list):
+                                      print(f"  Found nested list under '{key}.{sub_key}': {len(sub_value)} items")
+                                      proxy_candidates.extend(sub_value)
+                                  elif isinstance(sub_value, dict) and any(field in sub_value for field in ['ip', 'host', 'address', 'addr']):
+                                      proxy_candidates.append(sub_value)
               
               print(f"  Found {len(proxy_candidates)} proxy candidates")
               
+              # Additional check: if no candidates found but we have IP:PORT keys at root
+              if len(proxy_candidates) == 0 and isinstance(file_data, dict):
+                  for key, value in file_data.items():
+                      # Check if key looks like IP:PORT
+                      if ":" in key and isinstance(value, dict):
+                          print(f"  Found IP:PORT pattern in keys, using direct mapping")
+                          # Process direct IP:PORT to data mapping
+                          for ip_port, proxy_info in file_data.items():
+                              if ":" not in ip_port:
+                                  continue
+                                  
+                              ip, port = ip_port.split(":", 1)
+                              
+                              # Check for minimal required data
+                              if isinstance(proxy_info, dict) and "location" in proxy_info:
+                                  location = proxy_info.get("location", {})
+                                  lat = location.get("lat")
+                                  lon = location.get("lon")
+                                  
+                                  if lat is not None and lon is not None:
+                                      try:
+                                          lat, lon = float(lat), float(lon)
+                                          if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                              proxies.append({
+                                                  "ip": ip,
+                                                  "port": port,
+                                                  "latency": proxy_info.get("latency_ms", proxy_info.get("latency", 9999)),
+                                                  "anonymity": proxy_info.get("anonymity", "Unknown"),
+                                                  "lat": lat,
+                                                  "lon": lon, 
+                                                  "city": location.get("city", "Unknown"),
+                                                  "country": location.get("country", "Unknown"),
+                                                  "code": location.get("countryCode", "xx").lower(),
+                                                  "isp": location.get("isp", "N/A"),
+                                                  "source": filename,
+                                                  "protocol": proxy_info.get("type", proxy_info.get("protocol", "Unknown")),
+                                                  "last_checked": proxy_info.get("last_checked", "Unknown")
+                                              })
+                                      except (ValueError, TypeError):
+                                          continue
+                          
+                          # We've processed the direct mapping, return the results
+                          print(f"✅ Extracted {len(proxies)} valid proxies from direct mapping")
+                          return proxies
+              
+              # Process all the candidates we found
               for i, proxy in enumerate(proxy_candidates):
                   if i % 1000 == 0 and i > 0:
                       print(f"    Processing: {i}/{len(proxy_candidates)}")
@@ -265,43 +375,153 @@ jobs:
                   if not isinstance(proxy, dict):
                       continue
                   
-                  # Extract IP
-                  proxy_ip = proxy.get('ip') or proxy.get('host') or proxy.get('address')
+                  # Debug problematic proxies
+                  if i < 5 or (i < 20 and i % 5 == 0):
+                      print(f"    Proxy candidate {i}: {list(proxy.keys())}")
+                  
+                  # Extract IP - try various common field names
+                  proxy_ip = None
+                  for ip_field in ['ip', 'host', 'address', 'addr', 'proxy', 'server']:
+                      if ip_field in proxy and proxy[ip_field]:
+                          proxy_ip = proxy[ip_field]
+                          # Clean up IP if it has port attached
+                          if proxy_ip and ':' in proxy_ip:
+                              parts = proxy_ip.split(':')
+                              proxy_ip = parts[0]
+                              if 'port' not in proxy and len(parts) > 1:
+                                  proxy['port'] = parts[1]
+                          break
+                  
+                  # Skip if no IP found
                   if not proxy_ip:
                       continue
                   
-                  # Extract location
-                  location = proxy.get('location', {})
-                  if not location:
-                      # Sometimes location data is at root level
-                      if 'lat' in proxy and 'lon' in proxy:
-                          location = proxy
+                  # Extract location - try various patterns
+                  location = None
+                  lat, lon = None, None
                   
-                  lat = location.get('lat')
-                  lon = location.get('lon')
+                  # Pattern 1: 'location' object
+                  if 'location' in proxy and isinstance(proxy['location'], dict):
+                      location = proxy['location']
+                      lat = location.get('lat')
+                      lon = location.get('lon')
                   
-                  if lat is not None and lon is not None:
-                      try:
-                          lat, lon = float(lat), float(lon)
+                  # Pattern 2: 'geo' object
+                  elif 'geo' in proxy and isinstance(proxy['geo'], dict):
+                      location = proxy['geo']
+                      lat = location.get('lat', location.get('latitude'))
+                      lon = location.get('lon', location.get('longitude'))
+                  
+                  # Pattern 3: direct lat/lon
+                  elif 'lat' in proxy and 'lon' in proxy:
+                      lat = proxy.get('lat')
+                      lon = proxy.get('lon')
+                      location = proxy  # Use proxy itself for country/city lookup
+                  
+                  # Pattern 4: latitude/longitude
+                  elif 'latitude' in proxy and 'longitude' in proxy:
+                      lat = proxy.get('latitude')
+                      lon = proxy.get('longitude')
+                      location = proxy  # Use proxy itself for country/city lookup
+                  
+                  # Skip if no location found
+                  if lat is None or lon is None:
+                      continue
+                      
+                  try:
+                      lat, lon = float(lat), float(lon)
+                      
+                      if -90 <= lat <= 90 and -180 <= lon <= 180:
+                          # Get port - try various field names
+                          port = None
+                          for port_field in ['port', 'Port', 'PORT']:
+                              if port_field in proxy:
+                                  port = proxy[port_field]
+                                  break
                           
-                          if -90 <= lat <= 90 and -180 <= lon <= 180:
-                              proxies.append({
-                                  "ip": proxy_ip,
-                                  "port": proxy.get('port', 'Unknown'),
-                                  "latency": proxy.get('latency_ms') or proxy.get('latency', 9999),
-                                  "anonymity": proxy.get('anonymity', 'Unknown'),
-                                  "lat": lat,
-                                  "lon": lon,
-                                  "city": location.get('city', 'Unknown'),
-                                  "country": location.get('country', 'Unknown'),
-                                  "code": location.get('countryCode', 'xx').lower(),
-                                  "isp": location.get('isp', 'N/A'),
-                                  "source": filename,
-                                  "protocol": proxy.get('type') or proxy.get('protocol', 'Unknown'),
-                                  "last_checked": proxy.get('last_checked', 'Unknown')
-                              })
-                      except (ValueError, TypeError):
-                          continue
+                          # If no port found in fields, try extracting from IP
+                          if port is None and ':' in proxy_ip:
+                              proxy_ip, port = proxy_ip.split(':', 1)
+                          
+                          # Convert port to string if it's not
+                          if port is not None and not isinstance(port, str):
+                              port = str(port)
+                          
+                          # Collect additional location fields with fallbacks
+                          if location:
+                              country = location.get('country', location.get('Country', 'Unknown'))
+                              country_code = location.get('countryCode', location.get('country_code', 'xx'))
+                              city = location.get('city', location.get('City', 'Unknown'))
+                              region = location.get('region', location.get('Region', 'Unknown'))
+                              isp = location.get('isp', location.get('ISP', 'N/A'))
+                              org = location.get('org', location.get('organization', 'N/A'))
+                              asn = location.get('as', location.get('ASN', 'N/A'))
+                              timezone = location.get('timezone', location.get('Timezone', 'Unknown'))
+                          else:
+                              country = proxy.get('country', 'Unknown')
+                              country_code = proxy.get('country_code', 'xx')
+                              city = proxy.get('city', 'Unknown')
+                              region = proxy.get('region', 'Unknown')
+                              isp = proxy.get('isp', 'N/A')
+                              org = proxy.get('org', 'N/A')
+                              asn = proxy.get('as', 'N/A')
+                              timezone = proxy.get('timezone', 'Unknown')
+                          
+                          # Make sure country code is lowercase
+                          if country_code:
+                              country_code = country_code.lower()
+                          
+                          # Get protocol - try various field names
+                          protocol = None
+                          for protocol_field in ['protocol', 'type', 'scheme', 'proto']:
+                              if protocol_field in proxy:
+                                  protocol = proxy[protocol_field]
+                                  break
+                          
+                          # Clean up protocol value
+                          if protocol and isinstance(protocol, str):
+                              protocol = protocol.lower()
+                              if protocol not in ['http', 'https', 'socks4', 'socks5']:
+                                  # Try to normalize protocol values
+                                  if 'sock' in protocol:
+                                      if '4' in protocol:
+                                          protocol = 'socks4'
+                                      elif '5' in protocol:
+                                          protocol = 'socks5'
+                                      else:
+                                          protocol = 'socks'
+                                  elif protocol == 'ssl':
+                                      protocol = 'https'
+                                  else:
+                                      protocol = 'http'  # Default to HTTP
+                          else:
+                              # Default protocol
+                              protocol = 'http'
+                          
+                          # Add proxy to list
+                          proxies.append({
+                              "ip": proxy_ip,
+                              "port": port or 'Unknown',
+                              "latency": proxy.get('latency_ms') or proxy.get('latency') or proxy.get('delay') or proxy.get('response_time', 9999),
+                              "anonymity": proxy.get('anonymity') or proxy.get('anon') or proxy.get('anonymity_level', 'Unknown'),
+                              "lat": lat,
+                              "lon": lon,
+                              "city": city,
+                              "country": country,
+                              "code": country_code,
+                              "isp": isp,
+                              "source": filename,
+                              "protocol": protocol,
+                              "last_checked": proxy.get('last_checked') or proxy.get('checked') or proxy.get('timestamp', 'Unknown'),
+                              "region": region,
+                              "org": org,
+                              "as": asn,
+                              "timezone": timezone
+                          })
+                      
+                  except (ValueError, TypeError) as e:
+                      # print(f"    Error with lat/lon: {e}")
+                      continue
               
               print(f"✅ Extracted {len(proxies)} valid proxies from {filename}")
               return proxies
