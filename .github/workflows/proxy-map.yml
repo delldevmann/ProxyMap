@@ -43,6 +43,7 @@ jobs:
           import time
           from concurrent.futures import ThreadPoolExecutor, as_completed
           import warnings
+          import numpy as np
           warnings.filterwarnings('ignore')
 
           # Configuration
@@ -315,26 +316,62 @@ jobs:
               
               print(f"Processing {filename}: {type(file_data)}")
               
+              # Debug: Show structure
+              if isinstance(file_data, dict):
+                  print(f"  Top-level keys: {list(file_data.keys())[:10]}")
+              
               # Extract proxy candidates
               proxy_candidates = []
               
               if isinstance(file_data, list):
+                  # Direct list of proxies
                   proxy_candidates = file_data
               elif isinstance(file_data, dict):
-                  # Handle various dictionary structures
-                  for key, value in file_data.items():
-                      if isinstance(value, list):
-                          proxy_candidates.extend(value[:MAX_PROXIES_PER_FILE])
-                      elif isinstance(value, dict):
-                          if 'sample_proxies' in value:
-                              sample_proxies = list(value['sample_proxies'].values())
-                              proxy_candidates.extend(sample_proxies[:MAX_PROXIES_PER_FILE])
-                          elif any(field in value for field in ['ip', 'host', 'address']):
-                              proxy_candidates.append(value)
+                  # Check if the dict IS the proxy data (all keys are IPs)
+                  sample_keys = list(file_data.keys())[:5]
+                  if sample_keys and all(':' in str(k) or '.' in str(k) for k in sample_keys):
+                      # This is a dict where keys are IP:port
+                      print(f"  Detected IP:port dictionary format")
+                      for proxy_key, proxy_data in list(file_data.items())[:MAX_PROXIES_PER_FILE]:
+                          if isinstance(proxy_data, dict):
+                              # Add the IP from the key if not in the data
+                              if 'ip' not in proxy_data and ':' in proxy_key:
+                                  proxy_data['ip'] = proxy_key.split(':')[0]
+                                  proxy_data['port'] = proxy_key.split(':')[1]
+                              proxy_candidates.append(proxy_data)
+                  else:
+                      # Handle various nested structures
+                      for key, value in file_data.items():
+                          if isinstance(value, list):
+                              proxy_candidates.extend(value[:MAX_PROXIES_PER_FILE - len(proxy_candidates)])
+                          elif isinstance(value, dict):
+                              # Check for nested proxy structures
+                              if 'sample_proxies' in value:
+                                  sample_proxies = value['sample_proxies']
+                                  if isinstance(sample_proxies, dict):
+                                      for pk, pv in list(sample_proxies.items())[:MAX_PROXIES_PER_FILE - len(proxy_candidates)]:
+                                          if isinstance(pv, dict):
+                                              if 'ip' not in pv and ':' in pk:
+                                                  pv['ip'] = pk.split(':')[0]
+                                                  pv['port'] = pk.split(':')[1]
+                                              proxy_candidates.append(pv)
+                              elif any(field in value for field in ['ip', 'host', 'address', 'location']):
+                                  proxy_candidates.append(value)
+                              else:
+                                  # Maybe it's a protocol section
+                                  for nested_key, nested_value in value.items():
+                                      if isinstance(nested_value, dict) and any(field in nested_value for field in ['ip', 'host', 'location']):
+                                          proxy_candidates.append(nested_value)
+                                      elif isinstance(nested_value, list):
+                                          proxy_candidates.extend(nested_value[:MAX_PROXIES_PER_FILE - len(proxy_candidates)])
               
               # Limit candidates
               proxy_candidates = proxy_candidates[:MAX_PROXIES_PER_FILE]
-              print(f"  Found {len(proxy_candidates)} proxy candidates (limited)")
+              print(f"  Found {len(proxy_candidates)} proxy candidates")
+              
+              if not proxy_candidates:
+                  print(f"  No valid proxy structure found in {filename}")
+                  return proxies
               
               # Process in chunks
               for i in range(0, len(proxy_candidates), CHUNK_SIZE):
@@ -486,9 +523,13 @@ jobs:
           df['latency'] = pd.to_numeric(df['latency'], errors='coerce').fillna(9999)
           df['latency'] = df['latency'].clip(upper=9999)
           
+          # Calculate average latency safely
+          valid_latencies = df[df['latency'] < 9999]['latency']
+          avg_latency = valid_latencies.mean() if len(valid_latencies) > 0 else 9999
+          
           print(f"\n📈 ANALYSIS:")
           print(f"  🌍 Countries represented: {df['country'].nunique()}")
-          print(f"  ⚡ Average latency: {df[df['latency'] < 9999]['latency'].mean():.0f}ms")
+          print(f"  ⚡ Average latency: {avg_latency:.0f}ms")
           print(f"  🚀 Fast proxies (<1000ms): {len(df[df['latency'] < 1000])}")
           print(f"  🟡 Medium proxies (1000-2000ms): {len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])}")
           print(f"  🔴 Slow proxies (>2000ms): {len(df[df['latency'] >= 2000])}")
@@ -602,7 +643,7 @@ jobs:
           
           # Top countries bar chart
           top_countries = df["country"].value_counts().nlargest(12)
-          colors = plt.cm.viridis(range(len(top_countries)))
+          colors = plt.cm.viridis(np.linspace(0, 1, len(top_countries)))
           
           bars = ax1.barh(range(len(top_countries)), top_countries.values, color=colors)
           ax1.set_yticks(range(len(top_countries)))
@@ -618,8 +659,9 @@ jobs:
           
           # Protocol distribution pie chart
           protocol_counts = df['protocol'].value_counts()
+          colors_pie = plt.cm.Set3(np.linspace(0, 1, len(protocol_counts)))
           ax2.pie(protocol_counts.values, labels=protocol_counts.index, autopct='%1.1f%%', 
-                  colors=plt.cm.Set3(range(len(protocol_counts))))
+                  colors=colors_pie)
           ax2.set_title("Protocol Distribution", fontweight='bold', pad=20)
           
           plt.tight_layout()
@@ -662,7 +704,7 @@ jobs:
           <div style="margin-bottom: 12px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span style="font-size: 12px;">⚡ Avg Latency:</span>
-              <span style="font-weight: bold; color: #ffa500;">{df[df['latency'] < 9999]['latency'].mean():.0f}ms</span>
+              <span style="font-weight: bold; color: #ffa500;">{avg_latency:.0f}ms</span>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
               <span style="font-size: 12px;">📊 Data Sources:</span>
@@ -780,15 +822,15 @@ jobs:
           summary_stats = {
               "generated_at": datetime.now().isoformat(),
               "total_proxies": len(all_proxies),
-              "unique_countries": df['country'].nunique(),
-              "average_latency_ms": float(df[df['latency'] < 9999]['latency'].mean()),
+              "unique_countries": int(df['country'].nunique()),
+              "average_latency_ms": float(avg_latency),
               "data_sources": len(data_sources),
               "protocol_distribution": df['protocol'].value_counts().to_dict(),
               "top_countries": df['country'].value_counts().head(20).to_dict(),
               "performance_distribution": {
-                  "fast": fast_count,
-                  "medium": medium_count,
-                  "slow": slow_count
+                  "fast": int(fast_count),
+                  "medium": int(medium_count),
+                  "slow": int(slow_count)
               },
               "markers_on_map": len(df_sample),
               "output_size_mb": output_size if 'output_size' in locals() else None
