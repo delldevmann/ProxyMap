@@ -571,7 +571,8 @@ jobs:
           medium_count = len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])
           slow_count = len(df[df['latency'] >= 2000])
           
-          stats_html = f"""
+          # Create statistics HTML panel
+          stats_html = f'''
           <div style="position: fixed; 
                       top: 10px; left: 10px; width: 340px; 
                       background: linear-gradient(135deg, rgba(0,0,0,0.95) 0%, rgba(30,30,30,0.95) 100%); 
@@ -618,4 +619,107 @@ jobs:
           
           <div style="margin-bottom: 10px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px;">⚡ Avg Lat
+              <span style="font-size: 12px;">⚡ Avg Latency:</span>
+              <span style="font-weight: bold; color: #ffa500;">{df[df['latency'] < 9999]['latency'].mean():.0f}ms</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-size: 12px;">📊 Data Sources:</span>
+              <span style="font-weight: bold; color: #64ffda;">{len(data_sources)}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 12px;">🕒 Last Update:</span>
+              <span style="font-weight: bold; color: #ff6b6b;">{datetime.now().strftime('%H:%M UTC')}</span>
+            </div>
+          </div>
+          
+          <div style="font-size: 10px; color: #999; text-align: center; padding-top: 8px; border-top: 1px solid #444;">
+            💡 Click markers for details • 🔍 Zoom to explore
+          </div>
+          </div>
+          '''
+          
+          # Enhanced legend
+          legend_html = '''
+          <div style="position: fixed; 
+                      top: 10px; right: 10px; width: 180px; 
+                      background: linear-gradient(135deg, rgba(0,0,0,0.9) 0%, rgba(30,30,30,0.95) 100%); 
+                      border: 2px solid #764ba2; border-radius: 12px;
+                      z-index: 9999; font-size: 13px; padding: 16px;
+                      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                      color: white; font-family: 'Segoe UI', Arial, sans-serif;">
+          
+          <h4 style="margin: 0 0 12px 0; color: #764ba2; text-align: center;">🚦 Latency Legend</h4>
+          
+          <div style="margin-bottom: 8px;">
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 16px; height: 16px; background: #00ff00; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">< 1000ms (Fast)</span>
+            </div>
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 14px; height: 14px; background: #ffa500; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">1-2s (Medium)</span>
+            </div>
+            <div style="display: flex; align-items: center; margin: 6px 0;">
+              <div style="width: 12px; height: 12px; background: #ff0000; border-radius: 50%; margin-right: 10px; border: 1px solid white;"></div>
+              <span style="font-weight: 500;">> 2s (Slow)</span>
+            </div>
+          </div>
+          
+          <div style="border-top: 1px solid #444; padding-top: 8px; font-size: 11px; color: #bbb; text-align: center;">
+            📊 Clusters = High density<br>
+            🗺️ {len(df_sample):,} markers shown
+          </div>
+          </div>
+          '''
+          
+          # Add the charts as floating image
+          FloatImage("analysis_charts.png", bottom=20, right=20).add_to(m)
+          
+          # Add the info panels
+          m.get_root().html.add_child(folium.Element(stats_html))
+          m.get_root().html.add_child(folium.Element(legend_html))
+          
+          # Save the map
+          m.save("public/index.html")
+          
+          # Also save a data summary JSON
+          summary_data = {
+              "timestamp": datetime.now().isoformat(),
+              "total_proxies": len(all_proxies),
+              "unique_ips": len(unique_ips),
+              "countries": df['country'].nunique(),
+              "average_latency": float(df[df['latency'] < 9999]['latency'].mean()),
+              "protocol_distribution": protocol_dist.to_dict(),
+              "top_countries": top_countries.to_dict(),
+              "data_sources": len(data_sources),
+              "performance_distribution": {
+                  "fast": fast_count,
+                  "medium": medium_count,
+                  "slow": slow_count
+              }
+          }
+          
+          with open("public/summary.json", "w") as f:
+              json.dump(summary_data, f, indent=2)
+          
+          print(f"\n🎉 SUCCESS!")
+          print(f"✅ Generated interactive map with {len(all_proxies):,} proxies")
+          print(f"🌍 Covering {df['country'].nunique()} countries")
+          print(f"📈 Average latency: {df[df['latency'] < 9999]['latency'].mean():.0f}ms")
+          print(f"🗺️ Map saved to: public/index.html")
+          print(f"📊 Charts saved to: public/analysis_charts.png")
+          print(f"📄 Summary saved to: public/summary.json")
+          
+      - name: Create index page for GitHub Pages
+        run: |
+          cat > public/.nojekyll << EOF
+          EOF
+
+      - name: Upload artifacts
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './public'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
