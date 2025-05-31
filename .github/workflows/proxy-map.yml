@@ -30,12 +30,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install folium requests matplotlib pandas seaborn
+          pip install folium requests matplotlib pandas seaborn numpy
 
       - name: Generate comprehensive proxy map
         run: |
           python3 << 'EOF'
-          import requests, folium, pandas as pd, matplotlib.pyplot as plt
+          import requests, folium, pandas as pd, matplotlib.pyplot as plt, numpy as np
           from folium.plugins import Fullscreen, MiniMap, MarkerCluster, MousePosition
           import os, re, json
           from datetime import datetime
