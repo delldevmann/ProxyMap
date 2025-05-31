@@ -1,15 +1,9 @@
-name: Smart Incremental Proxy Scraper
+name: Complete Proxy Scraper - ALL Sources
 
 on:
   schedule:
     - cron: '0 */6 * * *'  # Run every 6 hours
   workflow_dispatch:  # Allow manual triggering
-    inputs:
-      force_full_scrape:
-        description: 'Force full re-scrape of all files'
-        required: false
-        default: 'false'
-        type: boolean
 
 permissions:
   contents: write
@@ -17,9 +11,9 @@ permissions:
   id-token: write
 
 jobs:
-  incremental-scrape:
+  scrape-all-proxies:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60  # Increase timeout for large processing
     
     environment:
       name: github-pages
@@ -37,9 +31,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install folium requests matplotlib pandas seaborn numpy
+          pip install folium requests matplotlib pandas seaborn numpy aiohttp asyncio
 
-      - name: Smart Incremental Proxy Collection
+      - name: Scrape ALL proxy files
         run: |
           python3 << 'EOF'
           import requests
@@ -47,317 +41,145 @@ jobs:
           import pandas as pd
           import matplotlib.pyplot as plt
           import numpy as np
-          from folium.plugins import Fullscreen, MiniMap, MarkerCluster, MousePosition
+          from folium.plugins import Fullscreen, MiniMap, MarkerCluster, MousePosition, HeatMap
           import os
           import re
           import json
-          import sqlite3
-          import hashlib
-          from datetime import datetime, timedelta
+          from datetime import datetime
           import time
-          from concurrent.futures import ThreadPoolExecutor, as_completed
+          import asyncio
+          import aiohttp
+          from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
           from collections import defaultdict
+          import gc
           
-          # Configuration
-          MAX_CONCURRENT_REQUESTS = 8
-          REQUEST_TIMEOUT = 45
+          # Enhanced configuration for maximum collection
+          MAX_CONCURRENT_REQUESTS = 10
+          MAX_TOTAL_PROXIES = 100000  # Increased for comprehensive collection
+          REQUEST_TIMEOUT = 60
           MAX_RETRIES = 2
-          DB_PATH = "proxy_database.db"
-          METADATA_FILE = "scrape_metadata.json"
-          FORCE_FULL_SCRAPE = "${{ github.event.inputs.force_full_scrape }}" == "true"
+          CHUNK_SIZE = 50  # Process in chunks to manage memory
           
-          print("🚀 SMART INCREMENTAL PROXY SCRAPER")
+          print("🚀 COMPREHENSIVE PROXY COLLECTION SYSTEM")
           print("=" * 60)
-          print(f"🗄️ Database mode: {'FULL SCRAPE' if FORCE_FULL_SCRAPE else 'INCREMENTAL'}")
+          print(f"🎯 Target: Collect ALL proxies from delldevmann/proxy-scraper")
           print(f"⏰ Started: {datetime.now()}")
+          print(f"🔧 Config: {MAX_CONCURRENT_REQUESTS} concurrent, {MAX_TOTAL_PROXIES:,} max proxies")
           
-          class ProxyDatabase:
-              def __init__(self, db_path):
-                  self.db_path = db_path
-                  self.init_database()
-              
-              def init_database(self):
-                  """Initialize SQLite database with optimized schema"""
-                  conn = sqlite3.connect(self.db_path)
-                  cursor = conn.cursor()
-                  
-                  # Create tables
-                  cursor.execute('''
-                  CREATE TABLE IF NOT EXISTS proxies (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      ip TEXT NOT NULL,
-                      port TEXT NOT NULL,
-                      protocol TEXT,
-                      country TEXT,
-                      city TEXT,
-                      country_code TEXT,
-                      lat REAL,
-                      lon REAL,
-                      isp TEXT,
-                      anonymity TEXT,
-                      latency INTEGER,
-                      last_checked TEXT,
-                      source_file TEXT,
-                      first_seen TEXT,
-                      last_updated TEXT,
-                      success_rate REAL,
-                      ssl_support BOOLEAN,
-                      google_passed BOOLEAN,
-                      UNIQUE(ip, port, protocol)
-                  )
-                  ''')
-                  
-                  cursor.execute('''
-                  CREATE TABLE IF NOT EXISTS processed_files (
-                      filename TEXT PRIMARY KEY,
-                      file_hash TEXT,
-                      processed_date TEXT,
-                      proxy_count INTEGER,
-                      file_size INTEGER
-                  )
-                  ''')
-                  
-                  # Create indexes for better performance
-                  cursor.execute('CREATE INDEX IF NOT EXISTS idx_ip_port ON proxies(ip, port)')
-                  cursor.execute('CREATE INDEX IF NOT EXISTS idx_country ON proxies(country)')
-                  cursor.execute('CREATE INDEX IF NOT EXISTS idx_latency ON proxies(latency)')
-                  cursor.execute('CREATE INDEX IF NOT EXISTS idx_protocol ON proxies(protocol)')
-                  
-                  conn.commit()
-                  conn.close()
-                  print("✅ Database initialized")
-              
-              def file_already_processed(self, filename, file_hash):
-                  """Check if file was already processed with same content"""
-                  conn = sqlite3.connect(self.db_path)
-                  cursor = conn.cursor()
-                  
-                  cursor.execute('''
-                  SELECT file_hash FROM processed_files 
-                  WHERE filename = ? AND file_hash = ?
-                  ''', (filename, file_hash))
-                  
-                  result = cursor.fetchone()
-                  conn.close()
-                  return result is not None
-              
-              def insert_proxies(self, proxies, filename, file_hash, file_size):
-                  """Insert new proxies and update existing ones"""
-                  conn = sqlite3.connect(self.db_path)
-                  cursor = conn.cursor()
-                  
-                  current_time = datetime.now().isoformat()
-                  new_count = 0
-                  updated_count = 0
-                  
-                  for proxy in proxies:
-                      # Check if proxy exists
-                      cursor.execute('''
-                      SELECT id, first_seen FROM proxies 
-                      WHERE ip = ? AND port = ? AND protocol = ?
-                      ''', (proxy['ip'], proxy['port'], proxy['protocol']))
-                      
-                      existing = cursor.fetchone()
-                      
-                      if existing:
-                          # Update existing proxy
-                          cursor.execute('''
-                          UPDATE proxies SET
-                              country = ?, city = ?, country_code = ?, lat = ?, lon = ?,
-                              isp = ?, anonymity = ?, latency = ?, last_checked = ?,
-                              source_file = ?, last_updated = ?, success_rate = ?,
-                              ssl_support = ?, google_passed = ?
-                          WHERE ip = ? AND port = ? AND protocol = ?
-                          ''', (
-                              proxy['country'], proxy['city'], proxy['code'],
-                              proxy['lat'], proxy['lon'], proxy['isp'],
-                              proxy['anonymity'], proxy['latency'], proxy['last_checked'],
-                              filename, current_time, proxy.get('success_rate'),
-                              proxy.get('ssl_support', False), proxy.get('google_passed', False),
-                              proxy['ip'], proxy['port'], proxy['protocol']
-                          ))
-                          updated_count += 1
+          def fetch_with_retry(session, url, max_retries=MAX_RETRIES):
+              """Enhanced fetch with session reuse"""
+              for attempt in range(max_retries):
+                  try:
+                      response = session.get(url, timeout=REQUEST_TIMEOUT)
+                      if response.status_code == 200:
+                          try:
+                              return response.json()
+                          except json.JSONDecodeError:
+                              print(f"❌ Invalid JSON: {url}")
+                              return None
+                      elif response.status_code == 429:
+                          wait_time = min(2 ** attempt, 30)
+                          print(f"⏸️  Rate limited, waiting {wait_time}s...")
+                          time.sleep(wait_time)
+                      elif response.status_code == 404:
+                          return None
                       else:
-                          # Insert new proxy
-                          cursor.execute('''
-                          INSERT INTO proxies (
-                              ip, port, protocol, country, city, country_code,
-                              lat, lon, isp, anonymity, latency, last_checked,
-                              source_file, first_seen, last_updated, success_rate,
-                              ssl_support, google_passed
-                          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                          ''', (
-                              proxy['ip'], proxy['port'], proxy['protocol'],
-                              proxy['country'], proxy['city'], proxy['code'],
-                              proxy['lat'], proxy['lon'], proxy['isp'],
-                              proxy['anonymity'], proxy['latency'], proxy['last_checked'],
-                              filename, current_time, current_time, proxy.get('success_rate'),
-                              proxy.get('ssl_support', False), proxy.get('google_passed', False)
-                          ))
-                          new_count += 1
+                          print(f"⚠️  HTTP {response.status_code}: {url}")
+                  except Exception as e:
+                      print(f"❌ Error attempt {attempt + 1}: {str(e)[:100]}")
                   
-                  # Record file as processed
-                  cursor.execute('''
-                  INSERT OR REPLACE INTO processed_files 
-                  (filename, file_hash, processed_date, proxy_count, file_size)
-                  VALUES (?, ?, ?, ?, ?)
-                  ''', (filename, file_hash, current_time, len(proxies), file_size))
-                  
-                  conn.commit()
-                  conn.close()
-                  
-                  return new_count, updated_count
+                  if attempt < max_retries - 1:
+                      time.sleep(min(2 ** attempt, 10))
               
-              def get_all_proxies(self):
-                  """Retrieve all proxies from database"""
-                  conn = sqlite3.connect(self.db_path)
-                  
-                  query = '''
-                  SELECT ip, port, protocol, country, city, country_code as code,
-                         lat, lon, isp, anonymity, latency, last_checked,
-                         source_file as source, success_rate, ssl_support, google_passed
-                  FROM proxies
-                  WHERE lat IS NOT NULL AND lon IS NOT NULL
-                  '''
-                  
-                  df = pd.read_sql_query(query, conn)
-                  conn.close()
-                  
-                  return df.to_dict('records')
-              
-              def get_statistics(self):
-                  """Get database statistics"""
-                  conn = sqlite3.connect(self.db_path)
-                  cursor = conn.cursor()
-                  
-                  # Total proxies
-                  cursor.execute('SELECT COUNT(*) FROM proxies')
-                  total_proxies = cursor.fetchone()[0]
-                  
-                  # Unique countries
-                  cursor.execute('SELECT COUNT(DISTINCT country) FROM proxies')
-                  countries = cursor.fetchone()[0]
-                  
-                  # Unique cities
-                  cursor.execute('SELECT COUNT(DISTINCT city) FROM proxies')
-                  cities = cursor.fetchone()[0]
-                  
-                  # Processed files
-                  cursor.execute('SELECT COUNT(*) FROM processed_files')
-                  processed_files = cursor.fetchone()[0]
-                  
-                  # Recent additions (last 24 hours)
-                  yesterday = (datetime.now() - timedelta(days=1)).isoformat()
-                  cursor.execute('SELECT COUNT(*) FROM proxies WHERE first_seen > ?', (yesterday,))
-                  recent_additions = cursor.fetchone()[0]
-                  
-                  conn.close()
-                  
-                  return {
-                      'total_proxies': total_proxies,
-                      'countries': countries,
-                      'cities': cities,
-                      'processed_files': processed_files,
-                      'recent_additions': recent_additions
-                  }
-              
-              def cleanup_old_data(self, days=30):
-                  """Remove proxies not seen in specified days"""
-                  conn = sqlite3.connect(self.db_path)
-                  cursor = conn.cursor()
-                  
-                  cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
-                  
-                  cursor.execute('DELETE FROM proxies WHERE last_updated < ?', (cutoff_date,))
-                  deleted = cursor.rowcount
-                  
-                  conn.commit()
-                  conn.close()
-                  
-                  return deleted
+              return None
           
-          def calculate_file_hash(content):
-              """Calculate SHA-256 hash of file content"""
-              if isinstance(content, str):
-                  content = content.encode('utf-8')
-              elif isinstance(content, dict):
-                  content = json.dumps(content, sort_keys=True).encode('utf-8')
-              return hashlib.sha256(content).hexdigest()
-          
-          def discover_files():
-              """Discover all available files with metadata"""
-              print("\n🔍 DISCOVERING FILES...")
+          def discover_all_files():
+              """Discover ALL available proxy files using multiple strategies"""
+              print("\n🔍 DISCOVERING ALL AVAILABLE FILES...")
               
-              api_url = "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results"
+              all_files = []
+              base_urls = [
+                  "https://api.github.com/repos/delldevmann/proxy-scraper/contents/results",
+              ]
               
               session = requests.Session()
               session.headers.update({
-                  'User-Agent': 'Smart-ProxyMapper/1.0',
-                  'Accept': 'application/vnd.github.v3+json'
+                  'User-Agent': 'ProxyMapBot/3.0 (+https://github.com/comprehensive-proxy-mapper)',
+                  'Accept': 'application/vnd.github.v3+json',
+                  'Accept-Encoding': 'gzip, deflate'
               })
               
-              try:
-                  response = session.get(api_url, timeout=30)
-                  if response.status_code != 200:
-                      print(f"❌ API error: {response.status_code}")
-                      return []
-                  
-                  files = response.json()
-                  
-                  proxy_files = []
-                  for file in files:
-                      if not isinstance(file, dict):
+              for api_url in base_urls:
+                  try:
+                      print(f"📡 Scanning: {api_url}")
+                      response = session.get(api_url, timeout=30)
+                      
+                      if response.status_code != 200:
+                          print(f"❌ API error {response.status_code}")
                           continue
                       
-                      filename = file.get('name', '')
-                      download_url = file.get('download_url', '')
-                      file_size = file.get('size', 0)
+                      files = response.json()
+                      if not isinstance(files, list):
+                          print(f"❌ Unexpected response format")
+                          continue
                       
-                      if (filename.endswith('.json') and 
-                          'proxy' in filename.lower() and 
-                          file_size > 100):
-                          proxy_files.append({
-                              'filename': filename,
-                              'url': download_url,
-                              'size': file_size,
-                              'modified': file.get('modified', '')
-                          })
-                  
-                  # Sort by modification date (newest first)
-                  proxy_files.sort(key=lambda x: x['filename'], reverse=True)
-                  
-                  print(f"✅ Found {len(proxy_files)} proxy files")
-                  return proxy_files
-                  
-              except Exception as e:
-                  print(f"❌ Error discovering files: {e}")
-                  return []
+                      source_files = []
+                      for file in files:
+                          if not isinstance(file, dict):
+                              continue
+                          
+                          filename = file.get('name', '')
+                          download_url = file.get('download_url', '')
+                          file_size = file.get('size', 0)
+                          
+                          # Accept comprehensive file patterns
+                          if (filename.endswith('.json') and 
+                              any(pattern in filename.lower() for pattern in [
+                                  'proxy', 'all_proxies', 'socks', 'http', 'https',
+                                  'elite', 'anonymous', 'transparent'
+                              ]) and 
+                              file_size > 100):  # Skip tiny files
+                              source_files.append((download_url, filename, file_size))
+                      
+                      print(f"✅ Found {len(source_files)} proxy files from this source")
+                      all_files.extend(source_files)
+                      
+                  except Exception as e:
+                      print(f"❌ Error scanning {api_url}: {e}")
+              
+              # Sort by size (larger files first) and date
+              def extract_datetime(filename):
+                  date_match = re.search(r'(\d{8})', filename)
+                  time_match = re.search(r'(\d{6})', filename)
+                  date_str = date_match.group(1) if date_match else '00000000'
+                  time_str = time_match.group(1) if time_match else '000000'
+                  return date_str + time_str
+              
+              # Remove duplicates and sort
+              unique_files = {}
+              for url, filename, size in all_files:
+                  key = filename
+                  if key not in unique_files or size > unique_files[key][2]:
+                      unique_files[key] = (url, filename, size)
+              
+              sorted_files = list(unique_files.values())
+              # Sort by datetime (newest first), then by size (largest first)
+              sorted_files.sort(key=lambda x: (extract_datetime(x[1]), x[2]), reverse=True)
+              
+              print(f"\n📊 DISCOVERY COMPLETE:")
+              print(f"   📁 Total unique files: {len(sorted_files)}")
+              print(f"   💾 Total size: {sum(f[2] for f in sorted_files) / (1024*1024):.1f} MB")
+              
+              return sorted_files
           
-          def fetch_and_hash_file(session, file_info):
-              """Fetch file and calculate its hash"""
-              try:
-                  response = session.get(file_info['url'], timeout=REQUEST_TIMEOUT)
-                  if response.status_code == 200:
-                      content = response.text
-                      file_hash = calculate_file_hash(content)
-                      try:
-                          data = response.json()
-                          return data, file_hash, True
-                      except json.JSONDecodeError:
-                          return None, file_hash, False
-                  return None, None, False
-              except Exception as e:
-                  print(f"❌ Error fetching {file_info['filename']}: {e}")
-                  return None, None, False
-          
-          def process_proxy_data(file_data, filename):
-              """Enhanced proxy data processor"""
+          def enhanced_proxy_processor(file_data, filename):
+              """Advanced proxy data processor with comprehensive format support"""
               proxies = []
               
-              if not file_data:
+              if not file_data or not isinstance(file_data, (dict, list)):
                   return proxies
               
-              # Handle nested proxy structure
+              # Strategy 1: New nested schema with protocol separation
               if isinstance(file_data, dict) and "proxies" in file_data:
                   proxies_by_type = file_data.get("proxies", {})
                   
@@ -381,11 +203,10 @@ jobs:
                                       ip = proxy_data.get('ip', proxy_key.split(':')[0] if ':' in proxy_key else proxy_key)
                                       port = proxy_key.split(':')[1] if ':' in proxy_key else proxy_data.get('port', 'Unknown')
                                       
-                                      proxy = {
+                                      proxy_obj = {
                                           "ip": ip,
                                           "port": str(port),
-                                          "protocol": proxy_data.get('type', protocol_type),
-                                          "latency": int(proxy_data.get('latency_ms', proxy_data.get('latency', 9999))),
+                                          "latency": proxy_data.get('latency_ms', proxy_data.get('latency', 9999)),
                                           "anonymity": proxy_data.get('anonymity', 'Unknown'),
                                           "lat": lat,
                                           "lon": lon,
@@ -393,435 +214,432 @@ jobs:
                                           "country": location.get('country', 'Unknown'),
                                           "code": location.get('countryCode', 'xx').lower(),
                                           "isp": location.get('isp', 'N/A'),
+                                          "source": filename,
+                                          "protocol": proxy_data.get('type', protocol_type),
                                           "last_checked": proxy_data.get('last_checked', 'Unknown'),
-                                          "success_rate": proxy_data.get('success_rate'),
+                                          "success_rate": proxy_data.get('success_rate', None),
+                                          "response_time": proxy_data.get('response_time', None),
                                           "ssl_support": proxy_data.get('ssl_support', False),
                                           "google_passed": proxy_data.get('google_passed', False)
                                       }
-                                      proxies.append(proxy)
+                                      proxies.append(proxy_obj)
                           except (ValueError, TypeError, KeyError):
                               continue
+                  
+                  return proxies
+              
+              # Strategy 2: Direct IP:PORT mapping
+              if isinstance(file_data, dict):
+                  ip_port_entries = [k for k in file_data.keys() if ':' in str(k) and '.' in str(k)]
+                  
+                  if len(ip_port_entries) > 5:
+                      for ip_port, proxy_info in file_data.items():
+                          if ':' not in str(ip_port) or not isinstance(proxy_info, dict):
+                              continue
+                          
+                          try:
+                              ip, port = str(ip_port).split(':', 1)
+                              
+                              if 'location' in proxy_info:
+                                  location = proxy_info['location']
+                                  lat = location.get('lat')
+                                  lon = location.get('lon')
+                                  
+                                  if lat is not None and lon is not None:
+                                      lat, lon = float(lat), float(lon)
+                                      
+                                      if -90 <= lat <= 90 and -180 <= lon <= 180:
+                                          proxy_obj = {
+                                              "ip": ip,
+                                              "port": port,
+                                              "latency": proxy_info.get('latency_ms', proxy_info.get('latency', 9999)),
+                                              "anonymity": proxy_info.get('anonymity', 'Unknown'),
+                                              "lat": lat,
+                                              "lon": lon,
+                                              "city": location.get('city', 'Unknown'),
+                                              "country": location.get('country', 'Unknown'),
+                                              "code": location.get('countryCode', 'xx').lower(),
+                                              "isp": location.get('isp', 'N/A'),
+                                              "source": filename,
+                                              "protocol": proxy_info.get('type', proxy_info.get('protocol', 'http')),
+                                              "last_checked": proxy_info.get('last_checked', 'Unknown'),
+                                              "success_rate": proxy_info.get('success_rate', None),
+                                              "response_time": proxy_info.get('response_time', None),
+                                              "ssl_support": proxy_info.get('ssl_support', False),
+                                              "google_passed": proxy_info.get('google_passed', False)
+                                          }
+                                          proxies.append(proxy_obj)
+                          except (ValueError, TypeError, KeyError):
+                              continue
+                      
+                      return proxies
+              
+              # Strategy 3: List format processing
+              proxy_candidates = []
+              
+              if isinstance(file_data, list):
+                  proxy_candidates = file_data
+              elif isinstance(file_data, dict):
+                  # Check for common list keys
+                  for key in ['proxies', 'data', 'results', 'items', 'proxy_list', 'servers']:
+                      if key in file_data and isinstance(file_data[key], list):
+                          proxy_candidates = file_data[key]
+                          break
+                  
+                  # Check protocol-specific keys
+                  if not proxy_candidates:
+                      for key in ['http', 'https', 'socks4', 'socks5', 'elite', 'anonymous']:
+                          if key in file_data:
+                              if isinstance(file_data[key], list):
+                                  proxy_candidates.extend(file_data[key])
+                              elif isinstance(file_data[key], dict):
+                                  if 'proxies' in file_data[key] and isinstance(file_data[key]['proxies'], list):
+                                      proxy_candidates.extend(file_data[key]['proxies'])
+              
+              # Process candidates
+              for proxy in proxy_candidates:
+                  if not isinstance(proxy, dict):
+                      continue
+                  
+                  try:
+                      # Extract IP address
+                      ip = None
+                      for field in ['ip', 'host', 'address', 'addr', 'proxy', 'server', 'endpoint']:
+                          if field in proxy and proxy[field]:
+                              ip = str(proxy[field])
+                              if ':' in ip:
+                                  ip = ip.split(':')[0]
+                              break
+                      
+                      if not ip or '.' not in ip:
+                          continue
+                      
+                      # Extract geolocation
+                      lat, lon = None, None
+                      location = {}
+                      
+                      # Multiple location field strategies
+                      location_sources = ['location', 'geo', 'geolocation', 'coords']
+                      for loc_key in location_sources:
+                          if loc_key in proxy and isinstance(proxy[loc_key], dict):
+                              location = proxy[loc_key]
+                              break
+                      
+                      if location:
+                          lat = location.get('lat', location.get('latitude'))
+                          lon = location.get('lon', location.get('longitude', location.get('lng')))
+                      else:
+                          # Direct coordinate fields
+                          for lat_field in ['lat', 'latitude', 'y']:
+                              if lat_field in proxy:
+                                  lat = proxy[lat_field]
+                                  break
+                          for lon_field in ['lon', 'longitude', 'lng', 'x']:
+                              if lon_field in proxy:
+                                  lon = proxy[lon_field]
+                                  break
+                          location = proxy
+                      
+                      if lat is None or lon is None:
+                          continue
+                      
+                      lat, lon = float(lat), float(lon)
+                      
+                      if -90 <= lat <= 90 and -180 <= lon <= 180:
+                          # Extract port
+                          port = 'Unknown'
+                          for port_field in ['port', 'Port', 'p']:
+                              if port_field in proxy:
+                                  port = str(proxy[port_field])
+                                  break
+                          
+                          if port == 'Unknown' and ':' in str(proxy.get('ip', '')):
+                              port = str(proxy['ip']).split(':')[1]
+                          
+                          # Extract country code
+                          country_code = 'xx'
+                          for code_field in ['countryCode', 'country_code', 'cc', 'code']:
+                              if code_field in location:
+                                  country_code = str(location[code_field]).lower()
+                                  break
+                          
+                          proxy_obj = {
+                              "ip": ip,
+                              "port": port,
+                              "latency": proxy.get('latency_ms', proxy.get('latency', proxy.get('delay', proxy.get('response_time', 9999)))),
+                              "anonymity": proxy.get('anonymity', proxy.get('anon', proxy.get('level', 'Unknown'))),
+                              "lat": lat,
+                              "lon": lon,
+                              "city": location.get('city', proxy.get('city', 'Unknown')),
+                              "country": location.get('country', proxy.get('country', 'Unknown')),
+                              "code": country_code,
+                              "isp": location.get('isp', proxy.get('isp', proxy.get('org', 'N/A'))),
+                              "source": filename,
+                              "protocol": proxy.get('protocol', proxy.get('type', proxy.get('scheme', 'http'))),
+                              "last_checked": proxy.get('last_checked', proxy.get('checked', proxy.get('updated', 'Unknown'))),
+                              "success_rate": proxy.get('success_rate', proxy.get('uptime', None)),
+                              "response_time": proxy.get('response_time', proxy.get('ping', None)),
+                              "ssl_support": proxy.get('ssl_support', proxy.get('https', False)),
+                              "google_passed": proxy.get('google_passed', proxy.get('google', False))
+                          }
+                          proxies.append(proxy_obj)
+                  except (ValueError, TypeError, KeyError, IndexError):
+                      continue
               
               return proxies
           
-          def save_metadata(stats, processing_time):
-              """Save processing metadata"""
-              metadata = {
-                  "last_run": datetime.now().isoformat(),
-                  "processing_time_seconds": processing_time,
-                  "statistics": stats,
-                  "run_type": "full_scrape" if FORCE_FULL_SCRAPE else "incremental"
-              }
+          def process_files_in_batches(all_files, batch_size=CHUNK_SIZE):
+              """Process files in batches to manage memory and avoid timeouts"""
+              print(f"\n🔄 PROCESSING {len(all_files)} FILES IN BATCHES OF {batch_size}")
               
-              with open(METADATA_FILE, 'w') as f:
-                  json.dump(metadata, f, indent=2)
-          
-          # Initialize database
-          if FORCE_FULL_SCRAPE and os.path.exists(DB_PATH):
-              os.remove(DB_PATH)
-              print("🗑️ Removed existing database for full re-scrape")
-          
-          db = ProxyDatabase(DB_PATH)
-          
-          # Get initial stats
-          initial_stats = db.get_statistics()
-          print(f"📊 Initial DB Stats: {initial_stats['total_proxies']:,} proxies, {initial_stats['countries']} countries")
-          
-          # Discover files
-          start_time = time.time()
-          all_files = discover_files()
-          
-          if not all_files:
-              print("❌ No files to process")
-              exit(1)
-          
-          # Process files incrementally
-          print(f"\n🔄 PROCESSING FILES...")
-          session = requests.Session()
-          session.headers.update({'User-Agent': 'Smart-ProxyMapper/1.0'})
-          
-          total_new = 0
-          total_updated = 0
-          processed_count = 0
-          skipped_count = 0
-          
-          # Process in batches
-          batch_size = 10
-          for i in range(0, len(all_files), batch_size):
-              batch = all_files[i:i + batch_size]
-              print(f"\n--- Batch {i//batch_size + 1} ---")
+              all_proxies = []
+              unique_ips = set()
+              processed_files = []
+              failed_files = []
+              total_batches = (len(all_files) + batch_size - 1) // batch_size
               
-              def process_file(file_info):
-                  try:
-                      # Fetch and hash file
-                      data, file_hash, success = fetch_and_hash_file(session, file_info)
-                      
-                      if not success or not data:
-                          return file_info['filename'], 0, 0, False, "fetch_failed"
-                      
-                      # Check if already processed
-                      if not FORCE_FULL_SCRAPE and db.file_already_processed(file_info['filename'], file_hash):
-                          return file_info['filename'], 0, 0, True, "already_processed"
-                      
-                      # Process proxy data
-                      proxies = process_proxy_data(data, file_info['filename'])
-                      
-                      if proxies:
-                          new_count, updated_count = db.insert_proxies(
-                              proxies, file_info['filename'], file_hash, file_info['size']
-                          )
-                          return file_info['filename'], new_count, updated_count, True, "processed"
-                      else:
-                          return file_info['filename'], 0, 0, True, "no_proxies"
-                      
-                  except Exception as e:
-                      return file_info['filename'], 0, 0, False, f"error: {str(e)[:50]}"
+              session = requests.Session()
+              session.headers.update({
+                  'User-Agent': 'ProxyMapBot/3.0 Comprehensive',
+                  'Accept': 'application/json',
+                  'Connection': 'keep-alive'
+              })
               
-              # Process batch concurrently
-              with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
-                  futures = {executor.submit(process_file, file_info): file_info for file_info in batch}
+              for batch_num in range(total_batches):
+                  start_idx = batch_num * batch_size
+                  end_idx = min(start_idx + batch_size, len(all_files))
+                  batch_files = all_files[start_idx:end_idx]
                   
-                  for future in as_completed(futures):
-                      filename, new_count, updated_count, success, status = future.result()
+                  print(f"\n--- BATCH {batch_num + 1}/{total_batches} ---")
+                  print(f"📂 Processing files {start_idx + 1}-{end_idx} of {len(all_files)}")
+                  
+                  def process_single_file(file_info):
+                      url, filename, size = file_info
+                      try:
+                          file_data = fetch_with_retry(session, url)
+                          if file_data:
+                              file_proxies = enhanced_proxy_processor(file_data, filename)
+                              return file_proxies, filename, True, size
+                          return [], filename, False, size
+                      except Exception as e:
+                          print(f"❌ {filename}: {str(e)[:50]}")
+                          return [], filename, False, size
+                  
+                  # Process batch with threading
+                  batch_proxies = []
+                  with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_REQUESTS) as executor:
+                      future_to_file = {executor.submit(process_single_file, file_info): file_info 
+                                       for file_info in batch_files}
                       
-                      if success:
-                          if status == "already_processed":
-                              skipped_count += 1
-                              print(f"⏭️  {filename}: Already processed")
-                          elif status == "processed":
-                              total_new += new_count
-                              total_updated += updated_count
-                              processed_count += 1
-                              print(f"✅ {filename}: +{new_count} new, ~{updated_count} updated")
-                          elif status == "no_proxies":
-                              processed_count += 1
-                              print(f"ℹ️  {filename}: No valid proxies found")
-                      else:
-                          print(f"❌ {filename}: {status}")
+                      for future in as_completed(future_to_file):
+                          try:
+                              file_proxies, filename, success, size = future.result()
+                              
+                              if success:
+                                  processed_files.append(filename)
+                                  
+                                  # Add only truly unique proxies
+                                  new_proxies = []
+                                  for proxy in file_proxies:
+                                      proxy_key = f"{proxy['ip']}:{proxy['port']}"
+                                      if proxy_key not in unique_ips:
+                                          unique_ips.add(proxy_key)
+                                          new_proxies.append(proxy)
+                                  
+                                  if new_proxies:
+                                      batch_proxies.extend(new_proxies)
+                                      print(f"✅ {filename}: +{len(new_proxies)} unique ({size/1024:.1f}KB)")
+                                  else:
+                                      print(f"ℹ️  {filename}: No new proxies ({size/1024:.1f}KB)")
+                              else:
+                                  failed_files.append(filename)
+                                  print(f"❌ {filename}: Failed to process")
+                              
+                          except Exception as e:
+                              print(f"❌ Batch processing error: {e}")
+                  
+                  # Add batch results
+                  all_proxies.extend(batch_proxies)
+                  
+                  print(f"📊 Batch {batch_num + 1} Results:")
+                  print(f"   ✅ New proxies: {len(batch_proxies):,}")
+                  print(f"   📈 Total collected: {len(all_proxies):,}")
+                  print(f"   💾 Memory usage: ~{len(all_proxies) * 0.5 / 1024:.1f} MB")
+                  
+                  # Memory management
+                  if len(all_proxies) > MAX_TOTAL_PROXIES:
+                      print(f"🎯 Reached maximum target of {MAX_TOTAL_PROXIES:,} proxies")
+                      break
+                  
+                  # Garbage collection between batches
+                  gc.collect()
+                  
+                  # Small delay between batches
+                  if batch_num < total_batches - 1:
+                      time.sleep(2)
               
-              # Small delay between batches
-              time.sleep(1)
+              session.close()
+              return all_proxies, processed_files, failed_files
           
-          session.close()
+          # Execute comprehensive collection
+          start_time = time.time()
           
-          # Cleanup old data
-          deleted_count = db.cleanup_old_data(days=30)
-          if deleted_count > 0:
-              print(f"🧹 Cleaned up {deleted_count} old proxy records")
+          # Discovery phase
+          all_files = discover_all_files()
+          if not all_files:
+              print("❌ No files discovered! Creating sample data...")
+              # Enhanced sample data
+              sample_proxies = [
+                  {"ip": "1.1.1.1", "port": "8080", "lat": 40.7128, "lon": -74.0060, "country": "United States", "city": "New York", "code": "us", "latency": 45, "protocol": "http", "anonymity": "high", "isp": "Cloudflare", "source": "sample"},
+                  {"ip": "8.8.8.8", "port": "3128", "lat": 37.7749, "lon": -122.4194, "country": "United States", "city": "San Francisco", "code": "us", "latency": 32, "protocol": "https", "anonymity": "medium", "isp": "Google", "source": "sample"},
+                  {"ip": "208.67.222.222", "port": "8080", "lat": 51.5074, "lon": -0.1278, "country": "United Kingdom", "city": "London", "code": "gb", "latency": 67, "protocol": "http", "anonymity": "high", "isp": "OpenDNS", "source": "sample"}
+              ]
+              all_proxies = sample_proxies
+              processed_files = ["sample_data"]
+              failed_files = []
+          else:
+              # Processing phase
+              all_proxies, processed_files, failed_files = process_files_in_batches(all_files)
           
-          processing_time = time.time() - start_time
-          
-          # Get final stats
-          final_stats = db.get_statistics()
+          collection_time = time.time() - start_time
           
           print(f"\n{'='*60}")
-          print(f"🎉 SMART INCREMENTAL SCRAPING COMPLETE!")
+          print(f"🎉 COMPREHENSIVE COLLECTION COMPLETE!")
           print(f"{'='*60}")
-          print(f"⏱️  Processing time: {processing_time:.1f}s")
-          print(f"📁 Files processed: {processed_count}")
-          print(f"⏭️  Files skipped: {skipped_count}")
-          print(f"🆕 New proxies: {total_new:,}")
-          print(f"🔄 Updated proxies: {total_updated:,}")
-          print(f"📊 Total in DB: {final_stats['total_proxies']:,}")
-          print(f"🌍 Countries: {final_stats['countries']}")
-          print(f"🏙️ Cities: {final_stats['cities']}")
+          print(f"⏱️  Total time: {collection_time/60:.1f} minutes")
+          print(f"📊 Total unique proxies: {len(all_proxies):,}")
+          print(f"✅ Files processed: {len(processed_files)}")
+          print(f"❌ Files failed: {len(failed_files)}")
+          print(f"📈 Success rate: {len(processed_files)/(len(processed_files) + len(failed_files))*100:.1f}%")
           
-          # Generate map from database
-          print(f"\n🗺️ GENERATING MAP FROM DATABASE...")
-          
-          all_proxies = db.get_all_proxies()
           if not all_proxies:
-              print("❌ No proxies in database")
+              print("❌ No proxy data collected")
               exit(1)
           
+          # Enhanced data analysis
           df = pd.DataFrame(all_proxies)
           df['latency'] = pd.to_numeric(df['latency'], errors='coerce').fillna(9999)
           
-          # Create output directory
-          os.makedirs("public", exist_ok=True)
+          print(f"\n📈 DETAILED ANALYSIS:")
+          print(f"🌍 Countries: {df['country'].nunique()}")
+          print(f"🏙️ Cities: {df['city'].nunique()}")
+          print(f"🏢 ISPs: {df['isp'].nunique()}")
+          print(f"⚡ Avg latency: {df[df['latency'] < 9999]['latency'].mean():.0f}ms")
+          print(f"🔒 Protocols: {', '.join(df['protocol'].value_counts().head(5).index.tolist())}")
           
-          # Generate enhanced map
-          lat_center = df["lat"].median()
-          lon_center = df["lon"].median()
-          
-          m = folium.Map(
-              location=[lat_center, lon_center],
-              zoom_start=2,
-              tiles="CartoDB dark_matter",
-              control_scale=True,
-              prefer_canvas=True
-          )
-          
-          # Add plugins
-          Fullscreen(position='topright').add_to(m)
-          MiniMap(
-              toggle_display=True,
-              tile_layer="CartoDB dark_matter",
-              position='bottomright',
-              minimized=True
-          ).add_to(m)
-          
-          # Smart sampling for display
-          display_limit = 12000
-          if len(df) > display_limit:
-              print(f"📌 Sampling {display_limit:,} proxies for map display...")
-              # Prioritize recent and fast proxies
-              df_recent = df.head(display_limit // 2)  # Recent proxies
-              df_fast = df[df['latency'] < 1000].sample(n=min(len(df[df['latency'] < 1000]), display_limit // 2), random_state=42)
-              df_sample = pd.concat([df_recent, df_fast]).drop_duplicates()
-          else:
-              df_sample = df
-          
-          # Add clustering
-          marker_cluster = MarkerCluster(
-              name="All Proxies",
-              options={'maxClusterRadius': 50}
-          ).add_to(m)
-          
-          # Add markers with enhanced styling
-          for _, row in df_sample.iterrows():
-              # Color by latency
-              if row["latency"] < 500:
-                  color, size = '#00ff00', 10
-              elif row["latency"] < 1000:
-                  color, size = '#7fff00', 8
-              elif row["latency"] < 2000:
-                  color, size = '#ffa500', 6
-              else:
-                  color, size = '#ff0000', 4
-              
-              # Enhanced popup
-              popup_content = f"""
-              <div style='font-family: Arial; font-size: 12px; width: 280px;'>
-                <h4 style='margin: 0 0 10px 0; color: #333;'>{row['country']} • {row['city']}</h4>
-                <table style='width: 100%; font-size: 11px;'>
-                  <tr><td><b>Address:</b></td><td>{row['ip']}:{row['port']}</td></tr>
-                  <tr><td><b>Protocol:</b></td><td>{row['protocol'].upper()}</td></tr>
-                  <tr><td><b>Latency:</b></td><td style='color: {color}; font-weight: bold;'>{row['latency']}ms</td></tr>
-                  <tr><td><b>Anonymity:</b></td><td>{row['anonymity']}</td></tr>
-                  <tr><td><b>ISP:</b></td><td>{row['isp'][:30]}...</td></tr>
-                  <tr><td><b>SSL Support:</b></td><td>{'Yes' if row.get('ssl_support') else 'No'}</td></tr>
-                </table>
-              </div>
-              """
-              
-              folium.CircleMarker(
-                  location=[row["lat"], row["lon"]],
-                  radius=size,
-                  color='white',
-                  weight=1,
-                  fill=True,
-                  fillColor=color,
-                  fillOpacity=0.8,
-                  popup=folium.Popup(popup_content, max_width=320),
-                  tooltip=f"{row['country']} | {row['protocol'].upper()} | {row['latency']}ms"
-              ).add_to(marker_cluster)
-          
-          # Enhanced statistics panel
+          # Performance breakdown
           fast_count = len(df[df['latency'] < 1000])
           medium_count = len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)])
           slow_count = len(df[df['latency'] >= 2000])
           
-          stats_html = f'''
-          <div style="position: fixed; top: 20px; left: 20px; width: 300px; 
-                      background: rgba(0, 0, 0, 0.85); color: white; 
-                      border-radius: 10px; padding: 20px; z-index: 1000; 
-                      font-family: Arial; font-size: 12px; border: 1px solid #333;">
+          print(f"\n🚀 Performance Distribution:")
+          print(f"   Fast (<1s): {fast_count:,} ({fast_count/len(all_proxies)*100:.1f}%)")
+          print(f"   Medium (1-2s): {medium_count:,} ({medium_count/len(all_proxies)*100:.1f}%)")
+          print(f"   Slow (>2s): {slow_count:,} ({slow_count/len(all_proxies)*100:.1f}%)")
           
-          <h3 style="margin: 0 0 15px 0; color: #00ff88;">🗄️ Smart Proxy Database</h3>
+          # Create output directory
+          os.makedirs("public", exist_ok=True)
           
-          <div style="margin-bottom: 15px;">
-            <div style="font-size: 28px; font-weight: bold; color: #00ff88;">{len(all_proxies):,}</div>
-            <div style="color: #ccc;">Total Proxies in Database</div>
-          </div>
+          # Generate enhanced interactive map
+          print(f"\n🗺️ GENERATING INTERACTIVE MAP...")
           
-          <div style="margin-bottom: 15px;">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-              <div>
-                <div style="font-size: 18px; font-weight: bold;">{df['country'].nunique()}</div>
-                <div style="color: #ccc; font-size: 10px;">Countries</div>
-              </div>
-              <div>
-                <div style="font-size: 18px; font-weight: bold;">{df['city'].nunique()}</div>
-                <div style="color: #ccc; font-size: 10px;">Cities</div>
-              </div>
-            </div>
-          </div>
+          lat_center = df["lat"].median()
+          lon_center = df["lon"].median()
           
-          <div style="margin-bottom: 15px;">
-            <div style="font-size: 11px; color: #888; margin-bottom: 8px;">PERFORMANCE</div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-              <span style="color: #00ff00;">🟢 Fast (&lt;1s)</span>
-              <span>{fast_count:,}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-              <span style="color: #ffa500;">🟡 Medium (1-2s)</span>
-              <span>{medium_count:,}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between;">
-              <span style="color: #ff0000;">🔴 Slow (&gt;2s)</span>
-              <span>{slow_count:,}</span>
-            </div>
-          </div>
+          # Create professional map
+          m = folium.Map(
+              location=[lat_center, lon_center],
+              zoom_start=2,
+              tiles=None,  # We'll add custom tiles
+              control_scale=True,
+              prefer_canvas=True,
+              zoom_control=True,
+              scrollWheelZoom=True,
+              doubleClickZoom=True,
+              keyboard=True,
+              attributionControl=False
+          )
           
-          <div style="border-top: 1px solid #333; padding-top: 10px; font-size: 10px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-              <span style="color: #888;">Last Update:</span>
-              <span>{datetime.now().strftime('%H:%M UTC')}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-              <span style="color: #888;">New Today:</span>
-              <span style="color: #00ff88;">+{final_stats['recent_additions']:,}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between;">
-              <span style="color: #888;">Avg Latency:</span>
-              <span>{df[df['latency'] < 9999]['latency'].mean():.0f}ms</span>
-            </div>
-          </div>
-          </div>
-          '''
+          # Add multiple tile layers
+          folium.TileLayer(
+              tiles='https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+              attr='CartoDB',
+              name='Dark Theme',
+              control=True
+          ).add_to(m)
           
-          m.get_root().html.add_child(folium.Element(stats_html))
+          folium.TileLayer(
+              tiles='OpenStreetMap',
+              name='Street Map',
+              control=True
+          ).add_to(m)
           
-          # Save map
-          m.save("public/index.html")
+          folium.TileLayer(
+              tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+              attr='Esri',
+              name='Satellite',
+              control=True
+          ).add_to(m)
           
-          # Generate analytics
-          print("📊 Generating analytics...")
+          # Add enhanced plugins
+          Fullscreen(position='topright', force_separate_button=True).add_to(m)
           
-          plt.style.use('dark_background')
-          fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 10))
-          fig.patch.set_facecolor('#0a0a0a')
+          MiniMap(
+              toggle_display=True,
+              tile_layer='https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+              position='bottomright',
+              width=150, height=150,
+              minimized=True
+          ).add_to(m)
           
-          # Top countries
-          top_countries = df["country"].value_counts().head(12)
-          ax1.barh(range(len(top_countries)), top_countries.values, color='#00ff88')
-          ax1.set_yticks(range(len(top_countries)))
-          ax1.set_yticklabels(top_countries.index, fontsize=10)
-          ax1.set_title("Top 12 Countries", fontsize=14, color='white', pad=15)
-          ax1.grid(axis='x', alpha=0.3)
+          MousePosition(
+              position='bottomleft',
+              separator=' | ',
+              empty_string='',
+              lng_first=False,
+              num_digits=3,
+              prefix='Coordinates: '
+          ).add_to(m)
           
-          # Protocol distribution
-          protocol_counts = df['protocol'].value_counts()
-          colors = ['#00ff88', '#00ccff', '#ff6b6b', '#ffd93d', '#a8e6cf']
-          ax2.pie(protocol_counts.values, labels=protocol_counts.index, autopct='%1.1f%%',
-                  colors=colors[:len(protocol_counts)], startangle=90)
-          ax2.set_title("Protocol Distribution", fontsize=14, color='white', pad=15)
+          # Add layer control
+          folium.LayerControl(position='topright').add_to(m)
           
-          # Latency distribution
-          latency_data = df[df['latency'] < 5000]['latency']
-          ax3.hist(latency_data, bins=40, color='#00ff88', alpha=0.7, edgecolor='none')
-          ax3.set_xlabel("Latency (ms)", fontsize=12, color='white')
-          ax3.set_ylabel("Count", fontsize=12, color='white')
-          ax3.set_title(f"Latency Distribution (Avg: {latency_data.mean():.0f}ms)", fontsize=14, color='white', pad=15)
-          ax3.grid(axis='y', alpha=0.3)
-          ax3.axvline(1000, color='white', linestyle='--', alpha=0.5)
-          ax3.axvline(2000, color='white', linestyle='--', alpha=0.5)
+          # Smart sampling for performance
+          display_limit = 15000  # Increased for comprehensive display
+          if len(df) > display_limit:
+              print(f"📌 Sampling {display_limit:,} proxies for optimal map performance...")
+              # Stratified sampling - more fast proxies, fewer slow ones
+              fast_sample = min(len(df[df['latency'] < 1000]), int(display_limit * 0.5))
+              medium_sample = min(len(df[(df['latency'] >= 1000) & (df['latency'] < 2000)]), int(display_limit * 0.3))
+              slow_sample = min(len(df[df['latency'] >= 2000]), int(display_limit * 0.2))
+              
+              df_fast = df[df['latency'] < 1000].sample(n=fast_sample, random_state=42) if fast_sample > 0 else pd.DataFrame()
+              df_medium = df[(df['latency'] >= 1000) & (df['latency'] < 2000)].sample(n=medium_sample, random_state=42) if medium_sample > 0 else pd.DataFrame()
+              df_slow = df[df['latency'] >= 2000].sample(n=slow_sample, random_state=42) if slow_sample > 0 else pd.DataFrame()
+              
+              df_sample = pd.concat([df_fast, df_medium, df_slow], ignore_index=True)
+              print(f"📊 Selected {len(df_sample):,} representative proxies")
+          else:
+              df_sample = df
           
-          # Performance summary
-          performance_data = [fast_count, medium_count, slow_count]
-          performance_labels = ['Fast\n(<1s)', 'Medium\n(1-2s)', 'Slow\n(>2s)']
-          performance_colors = ['#00ff00', '#ffa500', '#ff0000']
-          
-          bars = ax4.bar(performance_labels, performance_data, 
-                        color=performance_colors, alpha=0.8, width=0.6)
-          ax4.set_title("Performance Categories", fontsize=14, color='white', pad=15)
-          ax4.set_ylabel("Number of Proxies", fontsize=12, color='white')
-          ax4.grid(axis='y', alpha=0.3)
-          
-          # Add value labels on bars
-          for bar, count in zip(bars, performance_data):
-              height = bar.get_height()
-              ax4.text(bar.get_x() + bar.get_width()/2., height + max(performance_data) * 0.01,
-                      f'{count:,}', ha='center', va='bottom', fontsize=11, color='white', weight='bold')
-          
-          plt.tight_layout()
-          plt.savefig("public/analytics.png", dpi=120, bbox_inches='tight', 
-                     facecolor='#0a0a0a', edgecolor='none')
-          plt.close()
-          
-          # Save comprehensive summary
-          summary_data = {
-              "timestamp": datetime.now().isoformat(),
-              "database_stats": final_stats,
-              "processing_summary": {
-                  "files_processed": processed_count,
-                  "files_skipped": skipped_count,
-                  "new_proxies": total_new,
-                  "updated_proxies": total_updated,
-                  "processing_time_seconds": processing_time,
-                  "run_type": "full_scrape" if FORCE_FULL_SCRAPE else "incremental"
-              },
-              "geographic_data": {
-                  "countries": int(df['country'].nunique()),
-                  "cities": int(df['city'].nunique()),
-                  "top_countries": top_countries.head(10).to_dict(),
-                  "top_cities": df['city'].value_counts().head(10).to_dict()
-              },
-              "performance_metrics": {
-                  "average_latency": float(df[df['latency'] < 9999]['latency'].mean()),
-                  "median_latency": float(df[df['latency'] < 9999]['latency'].median()),
-                  "fast_proxies": int(fast_count),
-                  "medium_proxies": int(medium_count),
-                  "slow_proxies": int(slow_count),
-                  "performance_distribution": {
-                      "fast_percentage": round(fast_count/len(all_proxies)*100, 2),
-                      "medium_percentage": round(medium_count/len(all_proxies)*100, 2),
-                      "slow_percentage": round(slow_count/len(all_proxies)*100, 2)
+          # Create marker clusters by protocol
+          protocol_clusters = {}
+          for protocol in df_sample['protocol'].unique():
+              cluster = MarkerCluster(
+                  name=f"{protocol.upper()} Proxies",
+                  overlay=True,
+                  control=True,
+                  options={
+                      'maxClusterRadius': 40,
+                      'disableClusteringAtZoom': 12,
+                      'spiderfyOnMaxZoom': True,
+                      'showCoverageOnHover': False,
+                      'zoomToBoundsOnClick': True,
+                      'singleMarkerMode': False
                   }
-              },
-              "technical_data": {
-                  "protocol_distribution": protocol_counts.to_dict(),
-                  "anonymity_distribution": df['anonymity'].value_counts().to_dict(),
-                  "top_isps": df['isp'].value_counts().head(10).to_dict()
-              }
-          }
+              )
+              protocol_clusters[protocol] = cluster
+              cluster.add_to(m)
           
-          # Save all data files
-          with open("public/summary.json", "w") as f:
-              json.dump(summary_data, f, indent=2)
-          
-          # Export database snapshot
-          df_export = df.copy()
-          df_export.to_json("public/database_snapshot.json", orient="records", indent=2)
-          df_export[['ip', 'port', 'country', 'city', 'latency', 'protocol', 'anonymity']].to_csv("public/proxies.csv", index=False)
-          
-          # Save metadata
-          save_metadata(final_stats, processing_time)
-          
-          print(f"\n✅ SMART SCRAPING COMPLETE!")
-          print(f"🗺️ Map: public/index.html")
-          print(f"📊 Analytics: public/analytics.png") 
-          print(f"📄 Summary: public/summary.json")
-          print(f"🗄️ Database: {DB_PATH}")
-          print(f"⚡ Efficiency: {skipped_count}/{processed_count + skipped_count} files skipped (already processed)")
-          
-          EOF
-
-      - name: Commit database and metadata to repository
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          
-          # Add database and metadata files
-          git add proxy_database.db scrape_metadata.json
-          
-          # Only commit if there are changes
-          if ! git diff --cached --quiet; then
-            git commit -m "Update proxy database - $(date '+%Y-%m-%d %H:%M UTC')"
-            git push
-          else
-            echo "No database changes to commit"
-          fi
-
-      - name: Create .nojekyll file
-        run: echo "" > public/.nojekyll
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './public'
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          # Enhanced marker generation
+          print(f"📍
