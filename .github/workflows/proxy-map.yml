@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install folium requests matplotlib pandas seaborn numpy sqlite3
+          pip install folium requests matplotlib pandas seaborn numpy
 
       - name: Smart Incremental Proxy Collection
         run: |
