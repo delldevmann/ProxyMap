@@ -2,8 +2,8 @@
 
 > **Interactive global proxy infrastructure visualization with real-time analytics and automated updates**
 
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/YOUR-USERNAME/ProxyMap/proxy-map.yml?branch=main&style=for-the-badge)](https://github.com/YOUR-USERNAME/ProxyMap/actions)
-[![Live Map](https://img.shields.io/badge/🗺️_Live_Map-View_Now-brightgreen?style=for-the-badge)](https://YOUR-USERNAME.github.io/ProxyMap/)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/delldevmann/ProxyMap/proxy-map.yml?branch=main&style=for-the-badge)](https://github.com/delldevmann/ProxyMap/actions)
+[![Live Map](https://img.shields.io/badge/🗺️_Live_Map-View_Now-brightgreen?style=for-the-badge)](https://delldevmann.github.io/ProxyMap/)
 [![Auto Updates](https://img.shields.io/badge/⏰_Updates-Every_6_Hours-blue?style=for-the-badge)]()
 [![License](https://img.shields.io/github/license/YOUR-USERNAME/ProxyMap?style=for-the-badge)](LICENSE)
 
@@ -44,7 +44,7 @@ An advanced interactive world map that visualizes active proxy servers from mult
 ## 🚀 Quick Start
 
 ### 1. **View the Live Map**
-👉 **[Open ProxyMap](https://YOUR-USERNAME.github.io/ProxyMap/)**
+👉 **[Open ProxyMap](https://delldevmann.github.io/ProxyMap/)**
 
 ### 2. **Setup Your Own Instance**
 
@@ -175,7 +175,7 @@ open public/index.html
 Access the generated data programmatically:
 ```javascript
 // Fetch summary statistics
-fetch('https://YOUR-USERNAME.github.io/ProxyMap/summary.json')
+fetch('https://delldevmann.github.io/ProxyMap/summary.json')
   .then(response => response.json())
   .then(data => console.log(data));
 ```
@@ -186,8 +186,8 @@ fetch('https://YOUR-USERNAME.github.io/ProxyMap/summary.json')
 ```python
 # In the workflow, add to find_all_proxy_files():
 additional_sources = [
-    "https://api.github.com/repos/OTHER-USER/proxy-source/contents/data",
-    "https://raw.githubusercontent.com/ANOTHER-USER/proxies/main/list.json"
+    "https://api.github.com/repos/delldevmann/proxy-source/contents/data",
+    "https://raw.githubusercontent.com/delldevmann/proxies/main/list.json"
 ]
 ```
 
@@ -327,9 +327,9 @@ MIT License - Free for commercial and personal use
 ## 🙋 Support & Community
 
 ### Get Help
-- 📋 **Issues**: [GitHub Issues](https://github.com/YOUR-USERNAME/ProxyMap/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/YOUR-USERNAME/ProxyMap/discussions)
-- 📧 **Email**: your-email@domain.com
+- 📋 **Issues**: [GitHub Issues](https://github.com/delldevmann/ProxyMap/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/delldevmann/ProxyMap/discussions)
+- 📧 **Email**: delldevmann@domain.com
 
 ### Related Projects
 - 🕷️ **[Proxy Scraper](https://github.com/delldevmann/proxy-scraper)**: Primary data source
@@ -345,7 +345,7 @@ MIT License - Free for commercial and personal use
 
 <div align="center">
 
-**🌍 [View Live Map](https://YOUR-USERNAME.github.io/ProxyMap/) | ⭐ Star this repo if you find it useful!**
+**🌍 [View Live Map](https://delldevmann.github.io/ProxyMap/) | ⭐ Star this repo if you find it useful!**
 
 *Built with ❤️ using Python, Folium, GitHub Actions, and open source data*
 
@@ -355,10 +355,10 @@ MIT License - Free for commercial and personal use
 
 ## 📊 Statistics Badge
 
-![GitHub stars](https://img.shields.io/github/stars/YOUR-USERNAME/ProxyMap?style=social)
-![GitHub forks](https://img.shields.io/github/forks/YOUR-USERNAME/ProxyMap?style=social)
-![GitHub watchers](https://img.shields.io/github/watchers/YOUR-USERNAME/ProxyMap?style=social)
+![GitHub stars](https://img.shields.io/github/stars/delldevmann/ProxyMap?style=social)
+![GitHub forks](https://img.shields.io/github/forks/delldevmann/ProxyMap?style=social)
+![GitHub watchers](https://img.shields.io/github/watchers/delldevmann/ProxyMap?style=social)
 
-![Visitors](https://visitor-badge.laobi.icu/badge?page_id=YOUR-USERNAME.ProxyMap)
-![GitHub last commit](https://img.shields.io/github/last-commit/YOUR-USERNAME/ProxyMap)
-![GitHub repo size](https://img.shields.io/github/repo-size/YOUR-USERNAME/ProxyMap)
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=delldevmann.ProxyMap)
+![GitHub last commit](https://img.shields.io/github/last-commit/delldevmann/ProxyMap)
+![GitHub repo size](https://img.shields.io/github/repo-size/delldevmann/ProxyMap)
